@@ -25,6 +25,16 @@ void ButtonNavigator::onNextRelease(const Callback& callback) { onRelease(getNex
 
 void ButtonNavigator::onPreviousRelease(const Callback& callback) { onRelease(getPreviousButtons(), callback); }
 
+void ButtonNavigator::onRelease(const MappedInputManager::Button button, const Callback& callback) {
+  if (mappedInput != nullptr && mappedInput->wasReleased(button)) {
+    if (lastContinuousNavTime == 0) {
+      callback();
+    }
+
+    lastContinuousNavTime = 0;
+  }
+}
+
 void ButtonNavigator::onNextContinuous(const Callback& callback) { onContinuous(getNextButtons(), callback); }
 
 void ButtonNavigator::onPreviousContinuous(const Callback& callback) { onContinuous(getPreviousButtons(), callback); }
@@ -50,6 +60,13 @@ void ButtonNavigator::onRelease(const Buttons& buttons, const Callback& callback
     }
 
     lastContinuousNavTime = 0;
+  }
+}
+
+void ButtonNavigator::onContinuous(const MappedInputManager::Button button, const Callback& callback) {
+  if (mappedInput != nullptr && mappedInput->isPressed(button) && shouldNavigateContinuously()) {
+    callback();
+    lastContinuousNavTime = millis();
   }
 }
 

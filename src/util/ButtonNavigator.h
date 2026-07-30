@@ -32,10 +32,12 @@ class ButtonNavigator final {
 
   void onNextRelease(const Callback& callback);
   void onPreviousRelease(const Callback& callback);
+  void onRelease(MappedInputManager::Button button, const Callback& callback);
   void onRelease(const Buttons& buttons, const Callback& callback);
 
   void onNextContinuous(const Callback& callback);
   void onPreviousContinuous(const Callback& callback);
+  void onContinuous(MappedInputManager::Button button, const Callback& callback);
   void onContinuous(const Buttons& buttons, const Callback& callback);
 
   [[nodiscard]] static int nextIndex(int currentIndex, int totalItems);

@@ -271,27 +271,39 @@ void SettingsActivity::loop() {
     return;
   }
 
-  buttonNavigator.onNextRelease([this] {
+  const auto selectNextSetting = [this] {
     selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
     requestUpdate();
-  });
+  };
 
-  buttonNavigator.onPreviousRelease([this] {
+  const auto selectPreviousSetting = [this] {
     selectedSettingIndex = ButtonNavigator::previousIndex(selectedSettingIndex, settingsCount + 1);
     requestUpdate();
-  });
+  };
 
-  buttonNavigator.onNextContinuous([this, &hasChangedCategory] {
+  const auto selectNextCategory = [this, &hasChangedCategory] {
     hasChangedCategory = true;
     selectedCategoryIndex = ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount);
     requestUpdate();
-  });
+  };
 
-  buttonNavigator.onPreviousContinuous([this, &hasChangedCategory] {
+  const auto selectPreviousCategory = [this, &hasChangedCategory] {
     hasChangedCategory = true;
     selectedCategoryIndex = ButtonNavigator::previousIndex(selectedCategoryIndex, categoryCount);
     requestUpdate();
-  });
+  };
+
+  // The X3's isolated top-left/top-right side buttons switch tabs. The remappable
+  // lower-cluster Left/Right roles (Buttons 3/4 by default) move through settings.
+  buttonNavigator.onRelease(MappedInputManager::Button::Right, selectNextSetting);
+  buttonNavigator.onRelease(MappedInputManager::Button::Left, selectPreviousSetting);
+  buttonNavigator.onContinuous(MappedInputManager::Button::Right, selectNextSetting);
+  buttonNavigator.onContinuous(MappedInputManager::Button::Left, selectPreviousSetting);
+
+  buttonNavigator.onRelease(MappedInputManager::Button::Down, selectNextCategory);
+  buttonNavigator.onRelease(MappedInputManager::Button::Up, selectPreviousCategory);
+  buttonNavigator.onContinuous(MappedInputManager::Button::Down, selectNextCategory);
+  buttonNavigator.onContinuous(MappedInputManager::Button::Up, selectPreviousCategory);
 
   if (hasChangedCategory) {
     selectedSettingIndex = (selectedSettingIndex == 0) ? 0 : 1;

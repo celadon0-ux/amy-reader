@@ -1,7 +1,9 @@
 # CrossPoint Reader Development Guide
 
-Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3)
+Project: Open-source e-reader firmware for the Xteink X3 (ESP32-C3)
 Mission: Provide a lightweight, high-performance reading experience focused on EPUB rendering on constrained hardware.
+
+Target Compatibility: This fork supports the Xteink X3 only. Do not preserve, add, or worry about compatibility with the Xteink X4 or any other device model when making changes.
 
 ## AI Agent Identity and Cognitive Rules
 * Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).
@@ -358,6 +360,26 @@ sdkApiThatTakesOwnership(obj);  // SDK calls delete
 **Source**: [src/MappedInputManager.cpp:20-55](../src/MappedInputManager.cpp)
 
 Constraint: Physical button positions are fixed on hardware, but their logical functions change based on user settings and screen orientation.
+
+#### Xteink X3 Button Vocabulary
+
+Use these physical names whenever the user refers to X3 buttons. Do not call the isolated side buttons or the four lower buttons a rocker.
+
+| User term | Physical position | Firmware hardware constant | Usual/default role |
+|-----------|-------------------|----------------------------|--------------------|
+| **Top button** | Top edge | `HalGPIO::BTN_POWER` | Sleep/power |
+| **Top left button** | Only button on the left side | `HalGPIO::BTN_UP` | Previous page |
+| **Top right button** | Only button on the right side | `HalGPIO::BTN_DOWN` | Next page |
+| **Button 1** | Left cluster, leftmost button | `HalGPIO::BTN_BACK` | Back/exit |
+| **Button 2** | Left cluster, second button | `HalGPIO::BTN_CONFIRM` | Confirm |
+| **Button 3** | Right cluster, first button | `HalGPIO::BTN_LEFT` | Previous/up |
+| **Button 4** | Right cluster, rightmost button | `HalGPIO::BTN_RIGHT` | Next/down |
+
+**Terminology rules**:
+- “Top left/right” always means the isolated side buttons (`BTN_UP` / `BTN_DOWN`), never logical `Button::Left` / `Button::Right`.
+- “Button 1–4” always means the four physical lower-cluster buttons in left-to-right order.
+- Button 1–4 roles are remappable. Their hardware constants describe physical positions, while `MappedInputManager::Button::Back/Confirm/Left/Right` describe logical roles.
+- The top left/right page direction can be swapped through `SETTINGS.sideButtonLayout`; the table records the default `PREV_NEXT` layout.
 
 **Button Categories**:
 1. **Physical Fixed** (Up/Down side buttons):
