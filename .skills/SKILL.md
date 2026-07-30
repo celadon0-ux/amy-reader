@@ -124,6 +124,16 @@ These flags in `platformio.ini` fundamentally affect firmware behavior:
 - Must call `renderer.restoreBwBuffer()` to free temporary buffers
 - See [lib/GfxRenderer/GfxRenderer.cpp:439-440](../lib/GfxRenderer/GfxRenderer.cpp) for malloc usage
 
+### Flashing X3 OTA Slots
+
+X3 builds use the OTA partition layout in `partitions.csv`:
+
+- `ota_0` / `app0`: `0x10000`
+- `ota_1` / `app1`: `0x650000`
+- `otadata`: `0xe000`
+
+Before direct `esptool write_flash` uploads, read `otadata` and confirm which app slot the bootloader is selecting. A write to `0x10000` can erase, write, and hash-verify successfully while the X3 continues booting the old image from `ota_1` at `0x650000`. If the connected X3 is booting `ota_1`, flash the built `firmware.bin` to `0x650000` or update the OTA selector intentionally.
+
 ### Directory Structure
 * lib/: Internal libraries (Epub engine, GfxRenderer, UITheme, I18n)
   * lib/hal/: Hardware Abstraction Layer (HalDisplay, HalGPIO, HalStorage)
