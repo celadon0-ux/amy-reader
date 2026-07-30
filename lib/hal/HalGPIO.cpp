@@ -5,6 +5,7 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <XteinkDetect.h>
+#include <esp_attr.h>
 #include <esp_sleep.h>
 
 // Global HalGPIO instance
@@ -45,6 +46,8 @@ namespace {
 constexpr char HW_NAMESPACE[] = "cphw";
 constexpr char NVS_KEY_DEV_OVERRIDE[] = "dev_ovr";  // 0=auto, 1=x4, 2=x3
 constexpr char NVS_KEY_DEV_CACHED[] = "dev_det";    // 0=unknown, 1=x4, 2=x3
+constexpr uint32_t EXPECTED_DEEP_SLEEP_WAKE_MAGIC = 0xC3A11E5C;
+RTC_NOINIT_ATTR uint32_t expectedDeepSleepWakeMagic;
 
 enum class NvsDeviceValue : uint8_t { Unknown = 0, X4 = 1, X3 = 2 };
 
@@ -72,6 +75,14 @@ void writeNvsDeviceValue(const char* key, NvsDeviceValue value) {
 
 HalGPIO::DeviceType nvsToDeviceType(NvsDeviceValue value) {
   return value == NvsDeviceValue::X3 ? HalGPIO::DeviceType::X3 : HalGPIO::DeviceType::X4;
+}
+
+bool powerButtonPressedRaw() {
+  const int8_t pin = BoardConfig::ACTIVE.input.power;
+  if (pin < 0) return false;
+  const bool activeHigh = BoardConfig::ACTIVE.input.powerActiveHigh;
+  pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+  return digitalRead(pin) == (activeHigh ? HIGH : LOW);
 }
 
 HalGPIO::DeviceType detectDeviceTypeWithFingerprint() {
@@ -125,6 +136,8 @@ void HalGPIO::begin() {
   if (deviceIsX3() && BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8279) {
     BoardConfig::selectDevice(BoardConfig::Board::XteinkX3Uc8279);
   }
+
+  bootPowerButtonPressedAtBegin = powerButtonPressedRaw();
 
   SPI.begin(EPD_SCLK, SPI_MISO, EPD_MOSI, EPD_CS);
 
@@ -232,6 +245,10 @@ bool HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPre
   return true;
 }
 
+void HalGPIO::markDeepSleepWakeExpected() { expectedDeepSleepWakeMagic = EXPECTED_DEEP_SLEEP_WAKE_MAGIC; }
+
+void HalGPIO::clearDeepSleepWakeExpected() { expectedDeepSleepWakeMagic = 0; }
+
 bool HalGPIO::isUsbConnected() const {
   if (deviceIsX3()) {
     // X3: infer USB/charging via BQ27220 Current() register (0x0C, signed mA).
@@ -256,10 +273,16 @@ HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   const auto resetReason = esp_reset_reason();
 
   const bool usbConnected = isUsbConnected();
+  const bool expectedDeepSleepWake = expectedDeepSleepWakeMagic == EXPECTED_DEEP_SLEEP_WAKE_MAGIC;
 
   if (resetReason == ESP_RST_DEEPSLEEP &&
       (wakeupCause == ESP_SLEEP_WAKEUP_GPIO || wakeupCause == ESP_SLEEP_WAKEUP_EXT1)) {
     return WakeupReason::PowerButton;
+  }
+  if (expectedDeepSleepWake && wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && usbConnected &&
+      (resetReason == ESP_RST_USB || resetReason == ESP_RST_POWERON)) {
+    return (bootPowerButtonPressedAtBegin || powerButtonPressedRaw()) ? WakeupReason::PowerButton
+                                                             : WakeupReason::AfterUSBPower;
   }
   if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnected) {
     return WakeupReason::PowerButton;

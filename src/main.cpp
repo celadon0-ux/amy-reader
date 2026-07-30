@@ -341,6 +341,8 @@ void setup() {
       break;
   }
 
+  gpio.clearDeepSleepWakeExpected();
+
   // Recovery firmware mode: hold left side button (BTN_UP) together with the power button at
   // boot to skip directly to the SD-card firmware update screen. Useful on devices where USB
   // flashing has been locked down (e.g. recent X3 firmware).

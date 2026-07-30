@@ -45,6 +45,7 @@ class HalGPIO {
 
   bool lastUsbConnected = false;
   bool usbStateChanged = false;
+  bool bootPowerButtonPressedAtBegin = false;
 
  public:
   enum class DeviceType : uint8_t { X4, X3 };
@@ -95,6 +96,8 @@ class HalGPIO {
 
   enum class WakeupReason { PowerButton, AfterFlash, AfterUSBPower, Other };
 
+  void markDeepSleepWakeExpected();
+  void clearDeepSleepWakeExpected();
   WakeupReason getWakeupReason() const;
 
   // Button indices
