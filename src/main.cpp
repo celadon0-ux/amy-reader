@@ -266,12 +266,15 @@ void setup() {
   t1 = millis();
 
 #ifdef ENABLE_SERIAL_LOG
+  const bool developerBootSafeguards = CrossPointSettings::mirroredDeveloperModeEnabled();
   // Earliest possible Serial setup. The 250 ms stall before begin() lets the
   // USB Serial/JTAG peripheral finish power-on and lets the host complete USB
   // enumeration before we touch the CDC state — otherwise cold boot races
   // and the host has to be physically replugged for logs to flow. Warm reboot
   // worked without the delay because USB was already enumerated.
-  delay(250);
+  if (developerBootSafeguards) {
+    delay(250);
+  }
   Serial.begin(115200);
 #if LOG_SERIAL_HAS_TX_TIMEOUT
   logSerial.setTxTimeoutMs(1);  // This is a load-bearing 1. Do not modify.
@@ -306,7 +309,9 @@ void setup() {
 
   HalSystem::checkPanic();
 
-  SETTINGS.loadFromFile();
+  if (!SETTINGS.loadFromFile()) {
+    SETTINGS.syncDeviceModeMirror();
+  }
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
@@ -340,7 +345,7 @@ void setup() {
   // boot to skip directly to the SD-card firmware update screen. Useful on devices where USB
   // flashing has been locked down (e.g. recent X3 firmware).
   bool recoveryFirmwareMode = false;
-  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
+  if (SETTINGS.isDeveloperMode() && wakeupReason == HalGPIO::WakeupReason::PowerButton) {
     // Refresh the cached button state a few times — isPressed() needs ~half a second to settle
     // after boot per the HalGPIO contract. Use a millis-based deadline so we always wait the full
     // settle window even if the loop body takes longer than expected on slow boots.

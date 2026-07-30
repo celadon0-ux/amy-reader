@@ -3,6 +3,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <ObfuscationUtils.h>
+#include <Preferences.h>
 
 #include <algorithm>
 #include <cstring>
@@ -19,6 +20,8 @@ namespace {
 // Stack buffer for "<key>_obf" key construction — avoids a std::string
 // allocation per obfuscated setting on every save and load.
 constexpr size_t OBF_KEY_BUF = 64;
+constexpr char BOOT_MODE_NVS_NAMESPACE[] = "cpboot";
+constexpr char BOOT_MODE_NVS_KEY[] = "devmode";
 
 // Null-terminated copy into a fixed-size settings field.
 void copyToField(char* dest, const char* src, const size_t maxLen) {
@@ -26,7 +29,37 @@ void copyToField(char* dest, const char* src, const size_t maxLen) {
   dest[maxLen - 1] = '\0';
 }
 
+uint8_t sanitizeDeviceMode(uint8_t mode) {
+  return mode < CrossPointSettings::DEVICE_MODE_COUNT ? mode : CrossPointSettings::DEVICE_MODE_NORMAL;
+}
+
+void writeMirroredDeviceMode(uint8_t mode) {
+  mode = sanitizeDeviceMode(mode);
+  Preferences prefs;
+  if (!prefs.begin(BOOT_MODE_NVS_NAMESPACE, false)) {
+    return;
+  }
+  if (prefs.getUChar(BOOT_MODE_NVS_KEY, CrossPointSettings::DEVICE_MODE_NORMAL) != mode) {
+    prefs.putUChar(BOOT_MODE_NVS_KEY, mode);
+  }
+  prefs.end();
+}
+
 }  // namespace
+
+uint8_t CrossPointSettings::readMirroredDeviceMode() {
+  Preferences prefs;
+  if (!prefs.begin(BOOT_MODE_NVS_NAMESPACE, true)) {
+    return DEVICE_MODE_NORMAL;
+  }
+  const uint8_t mode = sanitizeDeviceMode(prefs.getUChar(BOOT_MODE_NVS_KEY, DEVICE_MODE_NORMAL));
+  prefs.end();
+  return mode;
+}
+
+bool CrossPointSettings::mirroredDeveloperModeEnabled() { return readMirroredDeviceMode() == DEVICE_MODE_DEVELOPER; }
+
+void CrossPointSettings::syncDeviceModeMirror() const { writeMirroredDeviceMode(deviceMode); }
 
 void CrossPointSettings::validateFrontButtonMapping(CrossPointSettings& settings) {
   const uint8_t mapping[] = {settings.frontButtonBack, settings.frontButtonConfirm, settings.frontButtonLeft,
@@ -219,6 +252,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     LOG_DBG("CPS", "Resaving settings to update format");
     requestResave();
   }
+
+  syncDeviceModeMirror();
 
   LOG_DBG("CPS", "Settings loaded from file");
 

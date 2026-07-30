@@ -171,6 +171,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     QUICK_RESUME_SLEEP_SCREEN_COUNT
   };
 
+  enum DEVICE_MODE { DEVICE_MODE_NORMAL = 0, DEVICE_MODE_DEVELOPER = 1, DEVICE_MODE_COUNT };
+
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
   // Sleep screen cover mode settings
@@ -280,6 +282,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t language = 0;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
+  // Device mode: Normal favors snappy user-facing boot/wake; Developer keeps boot-time safeguards for diagnostics.
+  uint8_t deviceMode = DEVICE_MODE_NORMAL;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
@@ -294,6 +298,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint16_t getPowerButtonDuration() const {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
   }
+  bool isDeveloperMode() const { return deviceMode == DEVICE_MODE_DEVELOPER; }
   int getReaderFontId() const;
 
   // Drop the SD font selection and fall back to the built-in family. The reader
@@ -345,6 +350,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   static const char* getFilePath() { return "/.crosspoint/settings.json"; }
   void toJson(JsonDocument& doc) const;
   bool fromJson(JsonVariantConst doc);
+
+  static uint8_t readMirroredDeviceMode();
+  static bool mirroredDeveloperModeEnabled();
+  void syncDeviceModeMirror() const;
 
   static void validateFrontButtonMapping(CrossPointSettings& settings);
   static uint8_t sleepTimeoutEnumToMinutes(uint8_t legacyValue);

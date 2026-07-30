@@ -127,6 +127,12 @@ void SettingsActivity::onExit() {
   UITheme::getInstance().reload();  // Re-apply theme in case it was changed
 }
 
+bool SettingsActivity::currentSettingsHaveSubtitles() const {
+  if (currentSettings == nullptr) return false;
+  return std::any_of(currentSettings->begin(), currentSettings->end(),
+                     [](const SettingInfo& setting) { return setting.subtitleId != StrId::STR_NONE_OPT; });
+}
+
 void SettingsActivity::loop() {
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
@@ -193,9 +199,9 @@ void SettingsActivity::loop() {
   auto settingIndexFromPoint = [&](const int x, const int y, int& settingIndex) {
     (void)x;
     if (settingsCount <= 0 || y < listTop || y >= listTop + listHeight) return false;
-    const int rowStep = GUI.getListRowStep(false);
+    const int rowStep = GUI.getListRowStep(currentSettingsHaveSubtitles());
     if (rowStep <= 0) return false;
-    const int pageItems = GUI.getListPageItems(listHeight, false);
+    const int pageItems = GUI.getListPageItems(listHeight, currentSettingsHaveSubtitles());
     const int selectedRow = std::max(0, selectedSettingIndex - 1);
     const int pageStart = selectedRow / pageItems * pageItems;
     const int row = (y - listTop) / rowStep;
@@ -255,7 +261,7 @@ void SettingsActivity::loop() {
   const int settingsListHeight =
       renderer.getScreenHeight() - (navMetrics.topPadding + navMetrics.headerHeight + navMetrics.tabBarHeight +
                                     navMetrics.buttonHintsHeight + navMetrics.verticalSpacing * 2);
-  const int settingsPageItems = GUI.getListPageItems(settingsListHeight, false);
+  const int settingsPageItems = GUI.getListPageItems(settingsListHeight, currentSettingsHaveSubtitles());
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up) {
     selectedSettingIndex = selectedSettingIndex == 0 ? 1
@@ -320,6 +326,7 @@ void SettingsActivity::toggleCurrentSetting() {
   const auto& setting = (*currentSettings)[selectedSetting];
   const bool sleepScreenChanged = setting.valuePtr == &CrossPointSettings::sleepScreen;
   const bool quickResumeTimeoutChanged = setting.valuePtr == &CrossPointSettings::quickResumeSleepScreen;
+  const bool deviceModeChanged = setting.valuePtr == &CrossPointSettings::deviceMode;
 
   if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
     openSleepTimeoutPicker();
@@ -335,9 +342,11 @@ void SettingsActivity::toggleCurrentSetting() {
     if (setting.enumValues.size() > 2) {
       const auto valuePtr = setting.valuePtr;
       optionPopup.show(setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()),
-                       currentValue, [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+                       currentValue,
+                       [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged, deviceModeChanged](int idx) {
                          SETTINGS.*valuePtr = idx;
                          syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
+                         if (deviceModeChanged) SETTINGS.syncDeviceModeMirror();
                          SETTINGS.saveToFile();
                          rebuildSettingsLists();
                        });
@@ -431,6 +440,7 @@ void SettingsActivity::toggleCurrentSetting() {
   }
 
   syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
+  if (deviceModeChanged) SETTINGS.syncDeviceModeMirror();
   SETTINGS.saveToFile();
   rebuildSettingsLists();
   selectedSettingIndex = std::min(selectedSettingIndex, settingsCount);
@@ -496,13 +506,25 @@ void SettingsActivity::render(RenderLock&&) {
                  selectedSettingIndex == 0);
 
   const auto& settings = *currentSettings;
+  const bool hasSubtitles = currentSettingsHaveSubtitles();
+  std::function<std::string(int)> rowSubtitle;
+  if (hasSubtitles) {
+    rowSubtitle = [&settings](int i) {
+      const auto& setting = settings[i];
+      if (setting.nameId == StrId::STR_DEVICE_MODE) {
+        return std::string(I18N.get(SETTINGS.isDeveloperMode() ? StrId::STR_DEVICE_MODE_DEVELOPER_DESC
+                                                               : StrId::STR_DEVICE_MODE_NORMAL_DESC));
+      }
+      return setting.subtitleId == StrId::STR_NONE_OPT ? std::string() : std::string(I18N.get(setting.subtitleId));
+    };
+  }
   GUI.drawList(
       renderer,
       Rect{0, metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing, pageWidth,
            pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.buttonHintsHeight +
                          metrics.verticalSpacing * 2)},
       settingsCount, selectedSettingIndex - 1,
-      [&settings](int index) { return std::string(I18N.get(settings[index].nameId)); }, nullptr, nullptr,
+      [&settings](int index) { return std::string(I18N.get(settings[index].nameId)); }, rowSubtitle, nullptr,
       [&settings](int i) {
         const auto& setting = settings[i];
         std::string valueText = "";

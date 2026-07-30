@@ -44,6 +44,7 @@ struct SettingInfo {
 
   const char* key = nullptr;             // JSON API key (nullptr for ACTION types)
   StrId category = StrId::STR_NONE_OPT;  // Category for web UI grouping
+  StrId subtitleId = StrId::STR_NONE_OPT;
   bool obfuscated = false;               // Save/load via base64 obfuscation (passwords)
   bool inTextSettings = false;           // Surfaced in the Text Settings screen; hidden from the flat Reader list
 
@@ -64,6 +65,11 @@ struct SettingInfo {
 
   SettingInfo& withTextSettings() {
     inTextSettings = true;
+    return *this;
+  }
+
+  SettingInfo& withSubtitle(StrId id) {
+    subtitleId = id;
     return *this;
   }
 
@@ -177,6 +183,7 @@ class SettingsActivity final : public Activity {
   void openSleepTimeoutPicker();
   void rebuildSettingsLists();
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
+  bool currentSettingsHaveSubtitles() const;
 
  public:
   explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

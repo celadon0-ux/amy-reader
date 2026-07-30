@@ -1185,6 +1185,13 @@ void CrossPointWebServer::handleGetSettings() const {
     doc["key"] = s.key;
     doc["name"] = I18N.get(s.nameId);
     doc["category"] = I18N.get(s.category);
+    if (s.subtitleId != StrId::STR_NONE_OPT) {
+      doc["description"] =
+          s.nameId == StrId::STR_DEVICE_MODE
+              ? I18N.get(SETTINGS.isDeveloperMode() ? StrId::STR_DEVICE_MODE_DEVELOPER_DESC
+                                                     : StrId::STR_DEVICE_MODE_NORMAL_DESC)
+              : I18N.get(s.subtitleId);
+    }
 
     switch (s.type) {
       case SettingType::TOGGLE: {
@@ -1327,6 +1334,7 @@ void CrossPointWebServer::handlePostSettings() {
   }
 
   SETTINGS.saveToFile();
+  SETTINGS.syncDeviceModeMirror();
 
   LOG_DBG("WEB", "Applied %d setting(s)", applied);
   server->send(200, "text/plain", String("Applied ") + String(applied) + " setting(s)");
