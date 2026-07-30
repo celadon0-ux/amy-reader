@@ -1344,6 +1344,11 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
       if (renderMode == BW && val < 3) {
         drawPixel(screenX, screenY);
+      } else if (renderMode == BW_GRAYSCALE_BASE) {
+        if (val == 0 || (val == 1 && ((screenX + screenY) & 1) == 0) ||
+            (val == 2 && (screenX & 1) == 0 && (screenY & 1) == 0)) {
+          drawPixel(screenX, screenY);
+        }
       } else if (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) {
         drawPixel(screenX, screenY, false);
       } else if (renderMode == GRAYSCALE_LSB && val == 1) {

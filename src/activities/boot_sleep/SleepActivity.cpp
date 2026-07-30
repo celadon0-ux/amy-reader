@@ -1,5 +1,8 @@
 #include "SleepActivity.h"
 
+#include <cstdlib>
+#include <cstring>
+
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -17,6 +20,58 @@
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
 
+namespace {
+
+class RenderModeGuard {
+ public:
+  explicit RenderModeGuard(GfxRenderer& renderer, GfxRenderer::RenderMode mode)
+      : renderer(renderer), previousMode(renderer.getRenderMode()) {
+    renderer.setRenderMode(mode);
+  }
+
+  ~RenderModeGuard() { renderer.setRenderMode(previousMode); }
+
+ private:
+  GfxRenderer& renderer;
+  GfxRenderer::RenderMode previousMode;
+};
+
+class StripTargetGuard {
+ public:
+  StripTargetGuard(GfxRenderer& renderer, uint8_t* buffer) : renderer(renderer) {
+    renderer.beginStripTarget(buffer, 0, renderer.getDisplayHeight());
+  }
+
+  ~StripTargetGuard() { renderer.endStripTarget(); }
+
+ private:
+  GfxRenderer& renderer;
+};
+
+bool renderBitmapPlaneToBuffer(GfxRenderer& renderer, const Bitmap& bitmap, uint8_t* buffer,
+                               GfxRenderer::RenderMode mode, int x, int y, int pageWidth, int pageHeight, float cropX,
+                               float cropY) {
+  const BmpReaderError rewindResult = bitmap.rewindToData();
+  if (rewindResult != BmpReaderError::Ok) {
+    LOG_ERR("SLP", "Failed to rewind bitmap for grayscale plane: %s", Bitmap::errorToString(rewindResult));
+    return false;
+  }
+
+  RenderModeGuard modeGuard(renderer, mode);
+  StripTargetGuard stripGuard(renderer, buffer);
+  renderer.clearScreen(0x00);
+  renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+  return true;
+}
+
+bool copyBufferToFrameBuffer(GfxRenderer& renderer, const uint8_t* buffer) {
+  uint8_t* frameBuffer = renderer.getFrameBuffer();
+  if (!frameBuffer) return false;
+  std::memcpy(frameBuffer, buffer, renderer.getBufferSize());
+  return true;
+}
+
+}  // namespace
 void SleepActivity::onEnter() {
   Activity::onEnter();
 
@@ -217,7 +272,35 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
   const bool hasGreyscale = bitmap.hasGreyscale() &&
                             SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
 
-  renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+  const size_t bufferSize = renderer.getBufferSize();
+  uint8_t* preRenderedLsb = nullptr;
+  uint8_t* preRenderedMsb = nullptr;
+
+  if (hasGreyscale && gpio.deviceIsX3()) {
+    preRenderedLsb = static_cast<uint8_t*>(std::malloc(bufferSize));
+    preRenderedMsb = static_cast<uint8_t*>(std::malloc(bufferSize));
+    if (preRenderedLsb && preRenderedMsb &&
+        renderBitmapPlaneToBuffer(renderer, bitmap, preRenderedLsb, GfxRenderer::GRAYSCALE_LSB, x, y, pageWidth,
+                                  pageHeight, cropX, cropY) &&
+        renderBitmapPlaneToBuffer(renderer, bitmap, preRenderedMsb, GfxRenderer::GRAYSCALE_MSB, x, y, pageWidth,
+                                  pageHeight, cropX, cropY)) {
+      LOG_DBG("SLP", "Pre-rendered X3 sleep grayscale planes");
+    } else {
+      LOG_DBG("SLP", "Falling back to post-base sleep grayscale rendering");
+      std::free(preRenderedLsb);
+      std::free(preRenderedMsb);
+      preRenderedLsb = nullptr;
+      preRenderedMsb = nullptr;
+    }
+  }
+
+  bitmap.rewindToData();
+  if (hasGreyscale && gpio.deviceIsX3()) {
+    RenderModeGuard modeGuard(renderer, GfxRenderer::BW_GRAYSCALE_BASE);
+    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+  } else {
+    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+  }
 
   if (SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
     renderer.invertScreen();
@@ -234,21 +317,31 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
   }
 
   if (hasGreyscale) {
-    bitmap.rewindToData();
-    renderer.clearScreen(0x00);
-    renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
-    renderer.copyGrayscaleLsbBuffers();
+    if (preRenderedLsb && preRenderedMsb && copyBufferToFrameBuffer(renderer, preRenderedLsb)) {
+      renderer.copyGrayscaleLsbBuffers();
+      if (copyBufferToFrameBuffer(renderer, preRenderedMsb)) {
+        renderer.copyGrayscaleMsbBuffers();
+      }
+    } else {
+      bitmap.rewindToData();
+      renderer.clearScreen(0x00);
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+      renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+      renderer.copyGrayscaleLsbBuffers();
 
-    bitmap.rewindToData();
-    renderer.clearScreen(0x00);
-    renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
-    renderer.copyGrayscaleMsbBuffers();
+      bitmap.rewindToData();
+      renderer.clearScreen(0x00);
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+      renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+      renderer.copyGrayscaleMsbBuffers();
+    }
 
     renderer.displayGrayBuffer();
     renderer.setRenderMode(GfxRenderer::BW);
   }
+
+  std::free(preRenderedLsb);
+  std::free(preRenderedMsb);
 }
 
 void SleepActivity::renderCoverSleepScreen() const {
