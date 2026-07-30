@@ -173,7 +173,25 @@ void XtcReaderChapterSelectionActivity::render(RenderLock&&) {
   for (int i = pageStartIndex; i < static_cast<int>(chapters.size()) && i < pageStartIndex + pageItems; i++) {
     const auto& chapter = chapters[i];
     const char* title = chapter.name.empty() ? tr(STR_UNNAMED) : chapter.name.c_str();
-    renderer.drawText(UI_10_FONT_ID, contentX + 20, 60 + contentY + (i % pageItems) * 30, title, i != selectorIndex);
+    std::string pageCountText;
+    if (chapter.endPage >= chapter.startPage) {
+      pageCountText = std::to_string(static_cast<uint32_t>(chapter.endPage - chapter.startPage) + 1);
+    }
+
+    constexpr int sidePadding = 20;
+    constexpr int valueGap = 10;
+    const int itemY = 60 + contentY + (i % pageItems) * 30;
+    const int valueWidth =
+        pageCountText.empty() ? 0 : renderer.getTextWidth(UI_10_FONT_ID, pageCountText.c_str()) + valueGap;
+    const int titleMaxWidth = std::max(0, contentWidth - sidePadding * 2 - valueWidth);
+    const auto truncatedTitle = renderer.truncatedText(UI_10_FONT_ID, title, titleMaxWidth);
+    renderer.drawText(UI_10_FONT_ID, contentX + sidePadding, itemY, truncatedTitle.c_str(), i != selectorIndex);
+
+    if (!pageCountText.empty()) {
+      const int pageCountWidth = renderer.getTextWidth(UI_10_FONT_ID, pageCountText.c_str());
+      renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - sidePadding - pageCountWidth, itemY,
+                        pageCountText.c_str(), i != selectorIndex);
+    }
   }
 
   // Skip button hints in landscape CW mode (they overlap content)

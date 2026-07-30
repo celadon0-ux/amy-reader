@@ -52,6 +52,47 @@ constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
                                  sizeof(uint32_t) + sizeof(uint32_t);
+
+bool readFinalizedMatchingHeader(HalFile& f, const ReaderRenderSpec& spec) {
+  const uint32_t fileSize = f.size();
+  if (fileSize < HEADER_SIZE) {
+    return false;
+  }
+
+  uint8_t version;
+  serialization::readPod(f, version);
+  if (version != SECTION_FILE_VERSION) {
+    return false;
+  }
+
+  int fileFontId;
+  float fileLineCompression;
+  bool fileExtraParagraphSpacing;
+  uint8_t fileParagraphAlignment;
+  uint16_t fileViewportWidth;
+  uint16_t fileViewportHeight;
+  bool fileHyphenationEnabled;
+  bool fileEmbeddedStyle;
+  uint8_t fileImageRendering;
+  bool fileFocusReadingEnabled;
+  serialization::readPod(f, fileFontId);
+  serialization::readPod(f, fileLineCompression);
+  serialization::readPod(f, fileExtraParagraphSpacing);
+  serialization::readPod(f, fileParagraphAlignment);
+  serialization::readPod(f, fileViewportWidth);
+  serialization::readPod(f, fileViewportHeight);
+  serialization::readPod(f, fileHyphenationEnabled);
+  serialization::readPod(f, fileEmbeddedStyle);
+  serialization::readPod(f, fileImageRendering);
+  serialization::readPod(f, fileFocusReadingEnabled);
+
+  return spec.fontId == fileFontId && spec.lineCompression == fileLineCompression &&
+         spec.extraParagraphSpacing == fileExtraParagraphSpacing &&
+         spec.paragraphAlignment == fileParagraphAlignment && spec.viewportWidth == fileViewportWidth &&
+         spec.viewportHeight == fileViewportHeight && spec.hyphenationEnabled == fileHyphenationEnabled &&
+         spec.embeddedStyle == fileEmbeddedStyle && spec.imageRendering == fileImageRendering &&
+         spec.focusReadingEnabled == fileFocusReadingEnabled;
+}
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
@@ -777,6 +818,57 @@ std::optional<uint16_t> Section::getCachedPageCount() const {
   uint16_t count;
   serialization::readPod(f, count);
   return count;
+}
+
+std::optional<uint16_t> Section::getCachedPageCount(const ReaderRenderSpec& spec) const {
+  HalFile f;
+  if (!Storage.openFileForRead("SCT", filePath, f)) {
+    return std::nullopt;
+  }
+
+  if (!readFinalizedMatchingHeader(f, spec)) {
+    return std::nullopt;
+  }
+
+  f.seek(HEADER_SIZE - sizeof(uint32_t) * 4 - sizeof(uint16_t));
+  uint16_t count;
+  serialization::readPod(f, count);
+  return count;
+}
+
+std::optional<uint16_t> Section::getCachedPageForAnchor(const std::string& anchor,
+                                                        const ReaderRenderSpec& spec) const {
+  HalFile f;
+  if (!Storage.openFileForRead("SCT", filePath, f)) {
+    return std::nullopt;
+  }
+
+  if (!readFinalizedMatchingHeader(f, spec)) {
+    return std::nullopt;
+  }
+
+  const uint32_t fileSize = f.size();
+  f.seek(HEADER_SIZE - sizeof(uint32_t) * 3);
+  uint32_t anchorMapOffset;
+  serialization::readPod(f, anchorMapOffset);
+  if (anchorMapOffset == 0 || anchorMapOffset >= fileSize) {
+    return std::nullopt;
+  }
+
+  f.seek(anchorMapOffset);
+  uint16_t count;
+  serialization::readPod(f, count);
+  for (uint16_t i = 0; i < count; i++) {
+    std::string key;
+    uint16_t page;
+    serialization::readString(f, key);
+    serialization::readPod(f, page);
+    if (key == anchor) {
+      return page;
+    }
+  }
+
+  return std::nullopt;
 }
 
 std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) const {

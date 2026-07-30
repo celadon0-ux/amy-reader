@@ -33,3 +33,4 @@ lib/EpdFont/scripts/output/
 /sdkconfig.defaults
 sdkconfig.sticky
 /.tools
+/.pio-core

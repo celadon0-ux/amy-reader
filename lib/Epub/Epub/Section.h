@@ -137,6 +137,11 @@ class Section {
 
   // Get the page count from the section cache file without fully loading it.
   std::optional<uint16_t> getCachedPageCount() const;
+  // Same read-only lookup, but only returns a count when the finalized section cache
+  // matches the supplied render spec.
+  std::optional<uint16_t> getCachedPageCount(const ReaderRenderSpec& spec) const;
+  // Read an anchor page from a finalized matching cache without loading or invalidating it.
+  std::optional<uint16_t> getCachedPageForAnchor(const std::string& anchor, const ReaderRenderSpec& spec) const;
 
   // Look up the page number for a synthetic paragraph index from XPath p[N].
   std::optional<uint16_t> getPageForParagraphIndex(uint16_t pIndex) const;
