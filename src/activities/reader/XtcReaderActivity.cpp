@@ -220,7 +220,7 @@ void XtcReaderActivity::renderStatusBarOverlay(const StatusBarOverlayPosition po
                                    &orientedMarginLeft);
 
   int clearY;
-  int paddingBottom = 0;
+  StatusBarPosition statusBarPosition = StatusBarPosition::Bottom;
   if (position == StatusBarOverlayPosition::Bottom) {
     clearY = renderer.getScreenHeight() - orientedMarginBottom - statusBarHeight - 4;
     if (clearY < 0) {
@@ -228,7 +228,7 @@ void XtcReaderActivity::renderStatusBarOverlay(const StatusBarOverlayPosition po
     }
   } else {
     clearY = orientedMarginTop;
-    paddingBottom = renderer.getScreenHeight() - statusBarHeight - orientedMarginBottom - orientedMarginTop - 4;
+    statusBarPosition = StatusBarPosition::Top;
   }
   const int clearHeight = position == StatusBarOverlayPosition::Bottom
                               ? renderer.getScreenHeight() - orientedMarginBottom - clearY
@@ -241,7 +241,8 @@ void XtcReaderActivity::renderStatusBarOverlay(const StatusBarOverlayPosition po
   const int displayPage = static_cast<int>(currentPage) + 1;
   const float progress = pageCount > 0 ? (static_cast<float>(displayPage) * 100.0f) / pageCount : 0.0f;
   const auto pageInfo = getStatusBarInfo();
-  GUI.drawStatusBar(renderer, progress, pageInfo.currentPage, pageInfo.pageCount, pageInfo.title, paddingBottom);
+  GUI.drawStatusBar(renderer, progress, pageInfo.currentPage, pageInfo.pageCount, pageInfo.title, 0, 0, true, false,
+                    false, statusBarPosition);
 }
 
 void XtcReaderActivity::renderPage() {

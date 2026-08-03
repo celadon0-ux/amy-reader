@@ -17,10 +17,10 @@ ReaderRenderSpec getReaderRenderSpecForCurrentView(const GfxRenderer& renderer) 
   int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
-  orientedMarginTop += SETTINGS.screenMargin;
+  orientedMarginTop += std::max<int>(SETTINGS.screenMargin, UITheme::getInstance().getStatusBarHeight());
   orientedMarginLeft += SETTINGS.screenMargin;
   orientedMarginRight += SETTINGS.screenMargin;
-  orientedMarginBottom += std::max<int>(SETTINGS.screenMargin, UITheme::getInstance().getStatusBarHeight());
+  orientedMarginBottom += SETTINGS.screenMargin;
 
   const uint16_t viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
   const uint16_t viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
