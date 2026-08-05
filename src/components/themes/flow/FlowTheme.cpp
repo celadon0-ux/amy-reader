@@ -31,6 +31,7 @@ constexpr int kCenterCoverWidth = 220;
 constexpr int kCenterCoverHeight = 320;
 constexpr int kSideInnerHeight = 288;
 constexpr int kSideOuterHeight = 256;
+constexpr int kCarouselTopOffset = 50;
 constexpr int kTitleFontId = UI_12_FONT_ID;
 constexpr int kMenuFontId = NOTOSANS_12_FONT_ID;
 
@@ -152,22 +153,18 @@ void FlowTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   drawBatteryRight(renderer,
                    Rect{batteryX, rect.y + 14, FlowMetrics::values.batteryWidth, FlowMetrics::values.batteryHeight},
                    showBatteryPercentage);
-
-  const int cx = rect.x + rect.width / 2;
-  const int cy = rect.y + 16;
-  renderer.drawLine(cx - 20, cy, cx, cy + 12, 3, true);
-  renderer.drawLine(cx, cy + 12, cx + 20, cy, 3, true);
 }
 
 void FlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                     const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                     bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
   if (recentBooks.empty()) {
-    drawPlaceholderCover(renderer, rect.x + (rect.width - kCenterCoverWidth) / 2, rect.y + 22, kCenterCoverWidth,
+    const int coverY = rect.y + kCarouselTopOffset;
+    drawPlaceholderCover(renderer, rect.x + (rect.width - kCenterCoverWidth) / 2, coverY, kCenterCoverWidth,
                          kCenterCoverHeight);
-    renderer.drawCenteredText(kTitleFontId, rect.y + kCenterCoverHeight + 34, tr(STR_NO_OPEN_BOOK), true,
+    renderer.drawCenteredText(kTitleFontId, coverY + kCenterCoverHeight + 12, tr(STR_NO_OPEN_BOOK), true,
                               EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, rect.y + kCenterCoverHeight + 58, tr(STR_START_READING));
+    renderer.drawCenteredText(UI_10_FONT_ID, coverY + kCenterCoverHeight + 36, tr(STR_START_READING));
     return;
   }
 
@@ -185,7 +182,7 @@ void FlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
   }
 
   const int centerX = rect.x + rect.width / 2;
-  const int centerY = rect.y + 22;
+  const int centerY = rect.y + kCarouselTopOffset;
   const int centerLeft = centerX - kCenterCoverWidth / 2;
   const int centerRight = centerLeft + kCenterCoverWidth;
 
