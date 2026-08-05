@@ -118,6 +118,12 @@ void HomeActivity::onEnter() {
 
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
+  flowMenuSelectorIndex = menuItemToIndex(initialMenuItem, hasOpdsServers);
+  flowFocusZone =
+      initialMenuItem == HomeMenuItem::NONE && !recentBooks.empty() ? FlowFocusZone::BOOKS : FlowFocusZone::MENU;
+  if (isFlowTheme()) {
+    selectorIndex = 0;
+  }
 
   // Trigger first update
   requestUpdate();
@@ -166,6 +172,8 @@ void HomeActivity::freeCoverBuffer() {
   coverBufferStored = false;
 }
 
+bool HomeActivity::isFlowTheme() const { return SETTINGS.uiTheme == CrossPointSettings::UI_THEME::FLOW; }
+
 void HomeActivity::loop() {
   const int menuCount = getMenuItemCount();
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -196,6 +204,138 @@ void HomeActivity::loop() {
         break;
     }
   };
+
+  auto activateFlowMenuSelection = [this] {
+    switch (indexToMenuItem(flowMenuSelectorIndex, hasOpdsServers)) {
+      case HomeMenuItem::FILE_BROWSER:
+        onFileBrowserOpen();
+        break;
+      case HomeMenuItem::RECENTS:
+        onRecentsOpen();
+        break;
+      case HomeMenuItem::OPDS_BROWSER:
+        onOpdsBrowserOpen();
+        break;
+      case HomeMenuItem::FILE_TRANSFER:
+        onFileTransferOpen();
+        break;
+      case HomeMenuItem::SETTINGS_MENU:
+        onSettingsOpen();
+        break;
+      default:
+        break;
+    }
+  };
+
+  if (isFlowTheme()) {
+    const int bookCount = static_cast<int>(recentBooks.size());
+    const int flowMenuCount = menuCount - bookCount;
+
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) backPressSeen = true;
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) && backPressSeen && !recentBooks.empty()) {
+      onSelectBook(recentBooks[0].path);
+      return;
+    }
+
+    if (bookCount > 0 && mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      flowFocusZone = FlowFocusZone::BOOKS;
+      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, bookCount);
+      requestUpdate();
+      return;
+    }
+
+    if (bookCount > 0 && mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      flowFocusZone = FlowFocusZone::BOOKS;
+      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, bookCount);
+      requestUpdate();
+      return;
+    }
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      flowFocusZone = FlowFocusZone::MENU;
+      flowMenuSelectorIndex = ButtonNavigator::previousIndex(flowMenuSelectorIndex, flowMenuCount);
+      requestUpdate();
+      return;
+    }
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+      flowFocusZone = FlowFocusZone::MENU;
+      flowMenuSelectorIndex = ButtonNavigator::nextIndex(flowMenuSelectorIndex, flowMenuCount);
+      requestUpdate();
+      return;
+    }
+
+    const auto swipe = mappedInput.wasSwipe();
+    if (bookCount > 0 && swipe == MappedInputManager::SwipeDir::Up) {
+      flowFocusZone = FlowFocusZone::BOOKS;
+      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, bookCount);
+      requestUpdate();
+      return;
+    }
+    if (bookCount > 0 && swipe == MappedInputManager::SwipeDir::Down) {
+      flowFocusZone = FlowFocusZone::BOOKS;
+      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, bookCount);
+      requestUpdate();
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Left) {
+      flowFocusZone = FlowFocusZone::MENU;
+      flowMenuSelectorIndex = ButtonNavigator::nextIndex(flowMenuSelectorIndex, flowMenuCount);
+      requestUpdate();
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Right) {
+      flowFocusZone = FlowFocusZone::MENU;
+      flowMenuSelectorIndex = ButtonNavigator::previousIndex(flowMenuSelectorIndex, flowMenuCount);
+      requestUpdate();
+      return;
+    }
+
+    int tx = 0;
+    int ty = 0;
+    if (bookCount > 0 && mappedInput.wasScreenTouchDown(tx, ty) && tx >= 0 && tx < renderer.getScreenWidth() &&
+        ty >= metrics.homeTopPadding && ty < metrics.homeTopPadding + metrics.homeCoverTileHeight) {
+      if (flowFocusZone != FlowFocusZone::BOOKS) {
+        flowFocusZone = FlowFocusZone::BOOKS;
+        requestUpdate();
+      }
+      return;
+    }
+
+    if (bookCount > 0 &&
+        mappedInput.wasTapInRect(0, metrics.homeTopPadding, renderer.getScreenWidth(), metrics.homeCoverTileHeight)) {
+      flowFocusZone = FlowFocusZone::BOOKS;
+      onSelectBook(recentBooks[selectorIndex].path);
+      return;
+    }
+
+    const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+    int menuRow = -1;
+    const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, metrics.menuRowHeight + metrics.menuSpacing,
+                                                flowMenuCount, 0, INT32_MAX, metrics.menuRowHeight);
+    if (menuTouch != MappedInputManager::RowTouch::None) {
+      flowFocusZone = FlowFocusZone::MENU;
+      flowMenuSelectorIndex = menuRow;
+      if (menuTouch == MappedInputManager::RowTouch::Tap) {
+        activateFlowMenuSelection();
+      } else {
+        requestUpdate();
+      }
+      return;
+    }
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (flowFocusZone == FlowFocusZone::BOOKS && !recentBooks.empty()) {
+        onSelectBook(recentBooks[selectorIndex].path);
+      } else {
+        activateFlowMenuSelection();
+      }
+      return;
+    }
+
+    return;
+  }
 
   buttonNavigator.onNext([this, menuCount] {
     selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
@@ -295,8 +435,10 @@ void HomeActivity::render(RenderLock&&) {
   coverRectW = pageWidth;
   coverRectH = metrics.homeCoverTileHeight;
 
+  const int renderedCoverSelection =
+      isFlowTheme() && flowFocusZone == FlowFocusZone::MENU ? selectorIndex + 1000 : selectorIndex;
   GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
-                          recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+                          recentBooks, renderedCoverSelection, coverRendered, coverBufferStored, bufferRestored,
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   // Build menu items dynamically
@@ -315,18 +457,27 @@ void HomeActivity::render(RenderLock&&) {
     menuIcons.insert(menuIcons.begin(), Book);
   }
 
+  const int renderedMenuSelection =
+      isFlowTheme()
+          ? (flowFocusZone == FlowFocusZone::MENU ? flowMenuSelectorIndex : -1)
+          : (metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - static_cast<int>(recentBooks.size()));
+
   GUI.drawButtonMenu(
       renderer,
       Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
            pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
                          metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
       static_cast<int>(menuItems.size()),
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
+      renderedMenuSelection,
       [&menuItems](int index) { return std::string(menuItems[index]); },
       [&menuIcons](int index) { return menuIcons[index]; });
 
-  const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
-                                            tr(STR_DIR_DOWN));
+  const auto labels =
+      isFlowTheme()
+          ? mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_LEFT),
+                                  tr(STR_DIR_RIGHT))
+          : mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
+                                  tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();

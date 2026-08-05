@@ -9,6 +9,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <cmath>
 
 #include "FontCacheManager.h"
 
@@ -1423,6 +1424,114 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
 
   free(outputRow);
   free(rowBytes);
+}
+
+void GfxRenderer::drawPerspectiveBitmap(const Bitmap& bitmap, const int x, const int y, const int width,
+                                        const int hLeft, const int hRight) const {
+  if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
+  if (width <= 0 || hLeft <= 0 || hRight <= 0) return;
+
+  const int srcW = bitmap.getWidth();
+  const int srcH = bitmap.getHeight();
+  if (srcW <= 0 || srcH <= 0) return;
+
+  const auto drawBlankPerspectiveFrame = [this, x, y, width, hLeft, hRight] {
+    const int targetMaxH = std::max(hLeft, hRight);
+    const int targetCenterY = y + targetMaxH / 2;
+    const int topLeft = targetCenterY - hLeft / 2;
+    const int bottomLeft = targetCenterY + hLeft / 2 - 1;
+    const int topRight = targetCenterY - hRight / 2;
+    const int bottomRight = targetCenterY + hRight / 2 - 1;
+    const int xs[4] = {x, x + width - 1, x + width - 1, x};
+    const int ys[4] = {topLeft, topRight, bottomRight, bottomLeft};
+    fillPolygon(xs, ys, 4, false);
+    drawLine(x, topLeft, x + width - 1, topRight, true);
+    drawLine(x + width - 1, topRight, x + width - 1, bottomRight, true);
+    drawLine(x + width - 1, bottomRight, x, bottomLeft, true);
+    drawLine(x, bottomLeft, x, topLeft, true);
+  };
+
+  const int srcRowSize = (srcW + 3) / 4;
+  const size_t bufferSize = static_cast<size_t>(srcRowSize) * static_cast<size_t>(srcH);
+  auto* buffer = static_cast<uint8_t*>(malloc(bufferSize));
+  auto* rowBytes = static_cast<uint8_t*>(malloc(bitmap.getRowBytes()));
+
+  if (!buffer || !rowBytes) {
+    LOG_ERR("GFX", "!! Failed to allocate perspective BMP buffers");
+    drawBlankPerspectiveFrame();
+    free(buffer);
+    free(rowBytes);
+    return;
+  }
+
+  if (bitmap.rewindToData() != BmpReaderError::Ok) {
+    LOG_ERR("GFX", "Failed to rewind bitmap for perspective draw");
+    drawBlankPerspectiveFrame();
+    free(buffer);
+    free(rowBytes);
+    return;
+  }
+
+  for (int row = 0; row < srcH; row++) {
+    if (bitmap.readNextRow(buffer + static_cast<size_t>(row) * srcRowSize, rowBytes) != BmpReaderError::Ok) {
+      LOG_ERR("GFX", "Failed to read row %d for perspective draw", row);
+      drawBlankPerspectiveFrame();
+      free(buffer);
+      free(rowBytes);
+      return;
+    }
+  }
+  free(rowBytes);
+
+  const int targetMaxH = std::max(hLeft, hRight);
+  const int targetCenterY = y + targetMaxH / 2;
+  const int denom = std::max(1, width - 1);
+
+  for (int dstX = 0; dstX < width; dstX++) {
+    const int screenX = x + dstX;
+    if (screenX < 0 || screenX >= getScreenWidth()) continue;
+
+    const int hCol = hLeft + (hRight - hLeft) * dstX / denom;
+    if (hCol <= 0) continue;
+
+    const int dstYStart = targetCenterY - hCol / 2;
+    int srcX = dstX * srcW / width;
+    if (srcX >= srcW) srcX = srcW - 1;
+
+    for (int dy = 0; dy < hCol; dy++) {
+      const int screenY = dstYStart + dy;
+      if (screenY < 0 || screenY >= getScreenHeight()) continue;
+
+      int srcY = dy * srcH / hCol;
+      if (srcY >= srcH) srcY = srcH - 1;
+      const int bufferedY = bitmap.isTopDown() ? srcY : (srcH - 1 - srcY);
+
+      const uint8_t byte = buffer[static_cast<size_t>(bufferedY) * srcRowSize + (srcX / 4)];
+      const uint8_t val = (byte >> (6 - ((srcX % 4) * 2))) & 0x03;
+
+      if (renderMode == BW) {
+        // Paint white pixels too so side covers can occlude covers behind them.
+        drawPixel(screenX, screenY, val < 3);
+      } else if (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) {
+        drawPixel(screenX, screenY, false);
+      } else if (renderMode == GRAYSCALE_LSB && val == 1) {
+        drawPixel(screenX, screenY, false);
+      }
+    }
+
+    if (renderMode == BW) {
+      drawPixel(screenX, dstYStart, true);
+      drawPixel(screenX, dstYStart + hCol - 1, true);
+    }
+  }
+
+  if (renderMode == BW) {
+    drawLine(x, targetCenterY - hLeft / 2, x, targetCenterY + hLeft / 2 - 1, true);
+    drawLine(x + width - 1, targetCenterY - hRight / 2, x + width - 1,
+             targetCenterY + hRight / 2 - 1, true);
+  }
+
+  free(buffer);
 }
 
 void GfxRenderer::fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state) const {
