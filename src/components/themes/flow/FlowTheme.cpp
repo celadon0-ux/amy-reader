@@ -13,7 +13,6 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "components/icons/book.h"
-#include "components/icons/cover.h"
 #include "components/icons/folder.h"
 #include "components/icons/hotspot.h"
 #include "components/icons/library.h"
@@ -21,6 +20,7 @@
 #include "components/icons/settings2.h"
 #include "components/icons/transfer.h"
 #include "components/icons/wifi.h"
+#include "components/themes/flow/DefaultBookCover.h"
 #include "fontIds.h"
 
 namespace {
@@ -72,8 +72,28 @@ void drawIconColor(const GfxRenderer& renderer, const uint8_t* bitmap, int x, in
   }
 }
 
+bool isDefaultCoverInk(const int x, const int y) {
+  const uint8_t byte = FlowDefaultCover::BITMAP[y * FlowDefaultCover::ROW_BYTES + (x >> 3)];
+  return ((byte >> (7 - (x & 7))) & 1) == 0;
+}
+
+void drawDefaultCoverBitmap(const GfxRenderer& renderer, const int x, const int y, const int width,
+                            const int height) {
+  if (width <= 0 || height <= 0) return;
+
+  for (int dstY = 0; dstY < height; dstY++) {
+    const int srcY = dstY * FlowDefaultCover::HEIGHT / height;
+    for (int dstX = 0; dstX < width; dstX++) {
+      const int srcX = dstX * FlowDefaultCover::WIDTH / width;
+      if (isDefaultCoverInk(srcX, srcY)) {
+        renderer.drawPixel(x + dstX, y + dstY, true);
+      }
+    }
+  }
+}
+
 void drawPlaceholderCover(GfxRenderer& renderer, int x, int y, int w, int h, bool perspective = false, int hLeft = 0,
-                          int hRight = 0) {
+                           int hRight = 0) {
   if (perspective) {
     const int maxH = std::max(hLeft, hRight);
     const int centerY = y + maxH / 2;
@@ -84,6 +104,22 @@ void drawPlaceholderCover(GfxRenderer& renderer, int x, int y, int w, int h, boo
     const int xs[4] = {x, x + w - 1, x + w - 1, x};
     const int ys[4] = {topLeft, topRight, bottomRight, bottomLeft};
     renderer.fillPolygon(xs, ys, 4, false);
+
+    const int widthDenominator = std::max(1, w - 1);
+    for (int dstX = 0; dstX < w; dstX++) {
+      const int columnHeight = hLeft + (hRight - hLeft) * dstX / widthDenominator;
+      if (columnHeight <= 0) continue;
+
+      const int columnTop = centerY - columnHeight / 2;
+      const int srcX = dstX * FlowDefaultCover::WIDTH / w;
+      for (int dstY = 0; dstY < columnHeight; dstY++) {
+        const int srcY = dstY * FlowDefaultCover::HEIGHT / columnHeight;
+        if (isDefaultCoverInk(srcX, srcY)) {
+          renderer.drawPixel(x + dstX, columnTop + dstY, true);
+        }
+      }
+    }
+
     renderer.drawLine(x, topLeft, x + w - 1, topRight, true);
     renderer.drawLine(x + w - 1, topRight, x + w - 1, bottomRight, true);
     renderer.drawLine(x + w - 1, bottomRight, x, bottomLeft, true);
@@ -92,9 +128,9 @@ void drawPlaceholderCover(GfxRenderer& renderer, int x, int y, int w, int h, boo
   }
 
   renderer.fillRoundedRect(x, y, w, h, kBookCornerRadius, Color::White);
+  drawDefaultCoverBitmap(renderer, x, y, w, h);
+  renderer.maskRoundedRectOutsideCorners(x, y, w, h, kBookCornerRadius, Color::White);
   renderer.drawRoundedRect(x, y, w, h, 1, kBookCornerRadius, true);
-  renderer.fillRoundedRect(x, y + h / 3, w, h * 2 / 3, kBookCornerRadius, false, false, true, true, Color::Black);
-  drawIconColor(renderer, CoverIcon, x + w / 2 - 16, y + h / 2 - 16, 32, false);
 }
 
 bool drawCoverBitmap(GfxRenderer& renderer, const RecentBook& book, int x, int y, int w, int h, bool rounded) {

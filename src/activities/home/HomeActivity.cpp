@@ -474,8 +474,8 @@ void HomeActivity::render(RenderLock&&) {
 
   const auto labels =
       isFlowTheme()
-          ? mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_LEFT),
-                                  tr(STR_DIR_RIGHT))
+          ? mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
+                                  tr(STR_DIR_DOWN))
           : mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
                                   tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
