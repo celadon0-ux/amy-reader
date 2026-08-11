@@ -11,7 +11,10 @@ struct Rect;
 
 class HomeActivity final : public Activity {
   ButtonNavigator buttonNavigator;
+  enum class FlowFocusZone { BOOKS, MENU };
   int selectorIndex = 0;
+  int flowMenuSelectorIndex = 0;
+  FlowFocusZone flowFocusZone = FlowFocusZone::BOOKS;
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;
@@ -58,6 +61,7 @@ class HomeActivity final : public Activity {
     if (idx == i) return HomeMenuItem::SETTINGS_MENU;
     return HomeMenuItem::NONE;
   }
+  bool isFlowTheme() const;
   void onSelectBook(const std::string& path);
   void onFileBrowserOpen();
   void onRecentsOpen();
