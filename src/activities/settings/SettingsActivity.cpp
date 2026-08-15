@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
@@ -20,6 +21,7 @@
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
+#include "StorageCategoryActivity.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -28,13 +30,15 @@
 #include "fontIds.h"
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
-                                                              StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+                                                              StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM,
+                                                              StrId::STR_CAT_STORAGE};
 
 void SettingsActivity::rebuildSettingsLists() {
   displaySettings.clear();
   readerSettings.clear();
   controlsSettings.clear();
   systemSettings.clear();
+  storageSettings.clear();
 
   // Pick up any fonts uploaded/deleted over the web server since the last
   // reader activity ran — otherwise the font-family picker shows stale list.
@@ -44,6 +48,7 @@ void SettingsActivity::rebuildSettingsLists() {
   // picks up dictionaries copied to the SD card since the last visit.
   std::vector<DictionaryEntry> dictionaries;
   DictionaryRegistry::discover(dictionaries);
+  discoveredDictionaryCount = static_cast<uint32_t>(dictionaries.size());
 
   for (auto& setting : getSettingsList(&sdFontSystem.registry(), &dictionaries)) {
     if (setting.category == StrId::STR_NONE_OPT) continue;
@@ -73,7 +78,6 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
   // TODO: Touch devices need their own firmware update path/artifacts before OTA is exposed.
   if (!BoardConfig::hasTouch()) {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
@@ -85,6 +89,14 @@ void SettingsActivity::rebuildSettingsLists() {
   readerSettings.insert(readerSettings.begin() + 1,
                         SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
+
+  storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_OPTIMIZE, SettingAction::None));
+  storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_BOOKS, SettingAction::None));
+  storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_IMAGES, SettingAction::None));
+  storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_FONTS, SettingAction::None));
+  storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_DICTIONARIES, SettingAction::None));
+  storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_CACHE, SettingAction::None));
+  storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_OTHER, SettingAction::None));
 
   // Update currentSettings pointer and count for the active category
   switch (selectedCategoryIndex) {
@@ -99,6 +111,9 @@ void SettingsActivity::rebuildSettingsLists() {
       break;
     case 3:
       currentSettings = &systemSettings;
+      break;
+    case 4:
+      currentSettings = &storageSettings;
       break;
   }
   settingsCount = static_cast<int>(currentSettings->size());
@@ -130,6 +145,12 @@ void SettingsActivity::onExit() {
 void SettingsActivity::loop() {
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
+  if (storageScanPending) {
+    requestUpdateAndWait();
+    scanStorage();
+    return;
+  }
+
   bool hasChangedCategory = false;
 
   auto applyCategorySelection = [this] {
@@ -145,6 +166,10 @@ void SettingsActivity::loop() {
         break;
       case 3:
         currentSettings = &systemSettings;
+        break;
+      case 4:
+        currentSettings = &storageSettings;
+        if (!storageScanned) storageScanPending = true;
         break;
     }
     settingsCount = static_cast<int>(currentSettings->size());
@@ -178,10 +203,10 @@ void SettingsActivity::loop() {
   int tx = 0;
   int ty = 0;
   const int tabTop = metrics.topPadding + metrics.headerHeight;
-  const int listTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
-  const int listHeight =
-      renderer.getScreenHeight() - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
-                                    metrics.buttonHintsHeight + metrics.verticalSpacing * 2);
+  const int listTop = selectedCategoryIndex == 4
+                          ? storageListTop()
+                          : metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int listHeight = renderer.getScreenHeight() - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
   auto buildTabs = [&]() {
     std::vector<TabInfo> tabs;
     tabs.reserve(categoryCount);
@@ -192,9 +217,31 @@ void SettingsActivity::loop() {
   };
   auto settingIndexFromPoint = [&](const int x, const int y, int& settingIndex) {
     (void)x;
-    if (settingsCount <= 0 || y < listTop || y >= listTop + listHeight) return false;
     const int rowStep = GUI.getListRowStep(false);
     if (rowStep <= 0) return false;
+    if (selectedCategoryIndex == 4) {
+      const int optimizeTop = storageListTop();
+      if (y >= optimizeTop && y < optimizeTop + rowStep) {
+        settingIndex = 1;
+        return true;
+      }
+
+      const int categoryTop = storageCategoryListTop();
+      const int categoryHeight = storageCategoryListHeight();
+      if (y < categoryTop || y >= categoryTop + categoryHeight) return false;
+      const int pageItems = GUI.getListPageItems(categoryHeight, false);
+      if (pageItems <= 0) return false;
+      const int selectedRow = std::max(0, selectedSettingIndex - 2);
+      const int pageStart = selectedRow / pageItems * pageItems;
+      const int row = (y - categoryTop) / rowStep;
+      const int touched = pageStart + row;
+      const int categoryCount = static_cast<int>(StorageCategory::Count);
+      if (row < 0 || row >= pageItems || touched < 0 || touched >= categoryCount) return false;
+      settingIndex = touched + 2;
+      return true;
+    }
+
+    if (settingsCount <= 0 || y < listTop || y >= listTop + listHeight) return false;
     const int pageItems = GUI.getListPageItems(listHeight, false);
     const int selectedRow = std::max(0, selectedSettingIndex - 1);
     const int pageStart = selectedRow / pageItems * pageItems;
@@ -253,20 +300,54 @@ void SettingsActivity::loop() {
   // Handle navigation
   const auto& navMetrics = UITheme::getInstance().getMetrics();
   const int settingsListHeight =
-      renderer.getScreenHeight() - (navMetrics.topPadding + navMetrics.headerHeight + navMetrics.tabBarHeight +
-                                    navMetrics.buttonHintsHeight + navMetrics.verticalSpacing * 2);
+      renderer.getScreenHeight() -
+      (selectedCategoryIndex == 4
+           ? storageCategoryListTop() + navMetrics.buttonHintsHeight + navMetrics.verticalSpacing
+           : navMetrics.topPadding + navMetrics.headerHeight + navMetrics.tabBarHeight +
+                 navMetrics.buttonHintsHeight + navMetrics.verticalSpacing * 2);
   const int settingsPageItems = GUI.getListPageItems(settingsListHeight, false);
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up) {
-    selectedSettingIndex = selectedSettingIndex == 0 ? 1
-                                                     : ButtonNavigator::nextPageIndex(
-                                                           selectedSettingIndex, settingsCount + 1, settingsPageItems);
+    if (selectedCategoryIndex == 4) {
+      if (selectedSettingIndex == 0) {
+        selectedSettingIndex = 1;
+      } else if (selectedSettingIndex == 1) {
+        selectedSettingIndex = 2;
+      } else if (selectedSettingIndex == settingsCount) {
+        selectedSettingIndex = 0;
+      } else {
+        selectedSettingIndex =
+            ButtonNavigator::nextPageIndex(selectedSettingIndex - 2,
+                                           static_cast<int>(StorageCategory::Count), settingsPageItems) +
+            2;
+      }
+    } else {
+      selectedSettingIndex = selectedSettingIndex == 0 ? 1
+                                                       : ButtonNavigator::nextPageIndex(
+                                                             selectedSettingIndex, settingsCount + 1,
+                                                             settingsPageItems);
+    }
     requestUpdate();
     return;
   }
   if (swipe == MappedInputManager::SwipeDir::Down) {
-    selectedSettingIndex =
-        ButtonNavigator::previousPageIndex(selectedSettingIndex, settingsCount + 1, settingsPageItems);
+    if (selectedCategoryIndex == 4) {
+      if (selectedSettingIndex == 0) {
+        selectedSettingIndex = settingsCount;
+      } else if (selectedSettingIndex == 1) {
+        selectedSettingIndex = 0;
+      } else if (selectedSettingIndex == 2) {
+        selectedSettingIndex = 1;
+      } else {
+        selectedSettingIndex =
+            ButtonNavigator::previousPageIndex(selectedSettingIndex - 2,
+                                               static_cast<int>(StorageCategory::Count), settingsPageItems) +
+            2;
+      }
+    } else {
+      selectedSettingIndex =
+          ButtonNavigator::previousPageIndex(selectedSettingIndex, settingsCount + 1, settingsPageItems);
+    }
     requestUpdate();
     return;
   }
@@ -314,6 +395,11 @@ void SettingsActivity::loop() {
 void SettingsActivity::toggleCurrentSetting() {
   int selectedSetting = selectedSettingIndex - 1;
   if (selectedSetting < 0 || selectedSetting >= settingsCount) {
+    return;
+  }
+
+  if (selectedCategoryIndex == 4) {
+    activateStorageRow(selectedSetting);
     return;
   }
 
@@ -474,6 +560,169 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+void SettingsActivity::scanStorage() {
+  storageAnalyzer.analyze(storageSnapshot, true);
+  storageSnapshot.logicalItemCounts[static_cast<size_t>(StorageCategory::Fonts)] =
+      static_cast<uint32_t>(sdFontSystem.registry().getFamilyCount());
+  storageSnapshot.logicalItemCounts[static_cast<size_t>(StorageCategory::Dictionaries)] = discoveredDictionaryCount;
+  storageScanPending = false;
+  storageScanned = true;
+  requestUpdate();
+}
+
+void SettingsActivity::handleStorageMutationResult(const ActivityResult& result) {
+  const auto* mutation = std::get_if<StorageMutationResult>(&result.data);
+  if (!mutation || !mutation->changed) return;
+  storageScanned = false;
+  storageScanPending = true;
+}
+
+void SettingsActivity::activateStorageRow(const int row) {
+  if (row == 0) {
+    const size_t cacheIndex = static_cast<size_t>(StorageCategory::ReadingCache);
+    if (storageSnapshot.breakdown.bytes[cacheIndex] == 0) return;
+    startActivityForResult(std::make_unique<ClearCacheActivity>(renderer, mappedInput),
+                           [this](const ActivityResult& result) { handleStorageMutationResult(result); });
+    return;
+  }
+
+  if (row == 3) {
+    startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
+                           [this](const ActivityResult& result) {
+                             sdFontSystem.refreshIfDirty();
+                             rebuildSettingsLists();
+                             handleStorageMutationResult(result);
+                           });
+    return;
+  }
+
+  static constexpr StorageCategory ROW_CATEGORIES[] = {
+      StorageCategory::Books, StorageCategory::Images, StorageCategory::Fonts,
+      StorageCategory::Dictionaries, StorageCategory::ReadingCache, StorageCategory::Other};
+  const int categoryRow = row - 1;
+  if (categoryRow < 0 || categoryRow >= static_cast<int>(std::size(ROW_CATEGORIES))) return;
+  const StorageCategory category = ROW_CATEGORIES[categoryRow];
+  const size_t categoryIndex = static_cast<size_t>(category);
+  startActivityForResult(
+      std::make_unique<StorageCategoryActivity>(renderer, mappedInput, category,
+                                                storageSnapshot.largestItems[categoryIndex],
+                                                storageSnapshot.breakdown.itemCounts[categoryIndex],
+                                                storageSnapshot.breakdown.complete),
+      [this](const ActivityResult& result) { handleStorageMutationResult(result); });
+}
+
+int SettingsActivity::storageListTop() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int summaryTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  return summaryTop + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing + metrics.progressBarHeight +
+         metrics.verticalSpacing;
+}
+
+int SettingsActivity::storageCategoryListTop() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return storageListTop() + GUI.getListRowStep(false) + metrics.verticalSpacing;
+}
+
+int SettingsActivity::storageCategoryListHeight() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return renderer.getScreenHeight() - storageCategoryListTop() - metrics.buttonHintsHeight - metrics.verticalSpacing;
+}
+
+void SettingsActivity::renderStoragePanel() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const int summaryTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+
+  if (storageScanPending || !storageScanned) {
+    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_STORAGE_SCANNING));
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    renderer.displayBuffer();
+    return;
+  }
+
+  std::string summary;
+  const auto& breakdown = storageSnapshot.breakdown;
+  if (breakdown.spaceValid) {
+    char buffer[96];
+    const std::string used = StorageAnalyzer::formatBytes(breakdown.usedBytes);
+    const std::string total = StorageAnalyzer::formatBytes(breakdown.totalBytes);
+    snprintf(buffer, sizeof(buffer), tr(STR_STORAGE_USED_OF), used.c_str(), total.c_str());
+    summary = buffer;
+  } else {
+    summary = tr(STR_STORAGE_UNAVAILABLE);
+  }
+  renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, summaryTop, summary.c_str(), true,
+                    EpdFontFamily::BOLD);
+
+  const int barX = metrics.contentSidePadding;
+  const int barY = summaryTop + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
+  const int barWidth = pageWidth - metrics.contentSidePadding * 2;
+  const int barHeight = metrics.progressBarHeight;
+  renderer.drawRect(barX, barY, barWidth, barHeight);
+  if (breakdown.spaceValid && breakdown.totalBytes > 0 && barWidth > 2 && barHeight > 2) {
+    const int innerX = barX + 1;
+    const int innerWidth = barWidth - 2;
+    const int innerHeight = barHeight - 2;
+    uint64_t cumulative = 0;
+    int currentX = innerX;
+    static constexpr Color COLORS[] = {Black, DarkGray, LightGray, Black, DarkGray, LightGray, White};
+    for (size_t i = 0; i < static_cast<size_t>(StorageCategory::Count) + 1; i++) {
+      const uint64_t value = i < static_cast<size_t>(StorageCategory::Count)
+                                 ? breakdown.bytes[i]
+                                 : breakdown.freeBytes;
+      cumulative = std::min(breakdown.totalBytes, cumulative + value);
+      const int endX = innerX + static_cast<int>((cumulative * static_cast<uint64_t>(innerWidth)) /
+                                                 breakdown.totalBytes);
+      const int segmentWidth = std::max(0, endX - currentX);
+      if (segmentWidth > 0) {
+        renderer.fillRectDither(currentX, barY + 1, segmentWidth, innerHeight, COLORS[i]);
+      }
+      if (endX > innerX && endX < innerX + innerWidth) renderer.drawLine(endX, barY + 1, endX, barY + barHeight - 2);
+      currentX = endX;
+    }
+  }
+
+  const int optimizeTop = storageListTop();
+  const int rowStep = GUI.getListRowStep(false);
+  GUI.drawList(
+      renderer, Rect{0, optimizeTop, pageWidth, rowStep}, 1, selectedSettingIndex == 1 ? 0 : -1,
+      [](int) { return std::string(tr(STR_STORAGE_OPTIMIZE)); }, nullptr, nullptr,
+      [&breakdown](int) {
+        return StorageAnalyzer::formatBytes(breakdown.bytes[static_cast<size_t>(StorageCategory::ReadingCache)]);
+      },
+      true, [&breakdown](int) {
+        return breakdown.bytes[static_cast<size_t>(StorageCategory::ReadingCache)] == 0;
+      });
+
+  static constexpr StrId SINGULAR_IDS[] = {
+      StrId::STR_STORAGE_BOOK,       StrId::STR_STORAGE_IMAGE,       StrId::STR_STORAGE_FONT,
+      StrId::STR_STORAGE_DICTIONARY, StrId::STR_STORAGE_CACHED_BOOK, StrId::STR_STORAGE_OTHER_ITEM};
+  static constexpr StrId PLURAL_IDS[] = {
+      StrId::STR_STORAGE_BOOKS,       StrId::STR_STORAGE_IMAGES,       StrId::STR_STORAGE_FONTS,
+      StrId::STR_STORAGE_DICTIONARIES, StrId::STR_STORAGE_CACHED_BOOKS, StrId::STR_STORAGE_OTHER_ITEMS};
+  const int categoryTop = storageCategoryListTop();
+  const int categoryHeight = storageCategoryListHeight();
+  GUI.drawList(
+      renderer, Rect{0, categoryTop, pageWidth, categoryHeight}, static_cast<int>(StorageCategory::Count),
+      selectedSettingIndex >= 2 ? selectedSettingIndex - 2 : -1,
+      [this](int index) {
+        return StorageAnalyzer::formatItemCount(storageSnapshot.logicalItemCounts[static_cast<size_t>(index)],
+                                                I18N.get(SINGULAR_IDS[index]), I18N.get(PLURAL_IDS[index]));
+      },
+      nullptr, nullptr,
+      [&breakdown](int index) { return StorageAnalyzer::formatBytes(breakdown.bytes[static_cast<size_t>(index)]); },
+      true);
+
+  const char* confirmLabel = selectedSettingIndex == 0 ? tr(STR_CAT_DISPLAY)
+                                                       : (selectedSettingIndex == 1 ? tr(STR_STORAGE_OPTIMIZE_HINT)
+                                                                                    : tr(STR_SELECT));
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderer.displayBuffer();
+}
+
 void SettingsActivity::render(RenderLock&&) {
   if (optionPopup.processRender(renderer, mappedInput)) return;
 
@@ -494,6 +743,11 @@ void SettingsActivity::render(RenderLock&&) {
   }
   GUI.drawTabBar(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight}, tabs,
                  selectedSettingIndex == 0);
+
+  if (selectedCategoryIndex == 4) {
+    renderStoragePanel();
+    return;
+  }
 
   const auto& settings = *currentSettings;
   GUI.drawList(

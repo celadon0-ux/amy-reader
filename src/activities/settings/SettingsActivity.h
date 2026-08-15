@@ -9,6 +9,7 @@
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
+#include "util/StorageAnalyzer.h"
 
 enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
 
@@ -162,14 +163,21 @@ class SettingsActivity final : public Activity {
   std::vector<SettingInfo> readerSettings;
   std::vector<SettingInfo> controlsSettings;
   std::vector<SettingInfo> systemSettings;
+  std::vector<SettingInfo> storageSettings;
   const std::vector<SettingInfo>* currentSettings = nullptr;
+
+  StorageAnalyzer storageAnalyzer;
+  StorageSnapshot storageSnapshot;
+  uint32_t discoveredDictionaryCount = 0;
+  bool storageScanPending = false;
+  bool storageScanned = false;
 
   bool preserveQuickResumeTimeoutOn = false;
   bool quickResumeTimeoutAutoEnabled = false;
 
   OptionPopup optionPopup;
 
-  static constexpr int categoryCount = 4;
+  static constexpr int categoryCount = 5;
   static const StrId categoryNames[categoryCount];
 
   void enterCategory(int categoryIndex);
@@ -177,6 +185,13 @@ class SettingsActivity final : public Activity {
   void openSleepTimeoutPicker();
   void rebuildSettingsLists();
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
+  void scanStorage();
+  void handleStorageMutationResult(const ActivityResult& result);
+  void activateStorageRow(int row);
+  int storageListTop() const;
+  int storageCategoryListTop() const;
+  int storageCategoryListHeight() const;
+  void renderStoragePanel();
 
  public:
   explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

@@ -10,11 +10,17 @@
 
 class HalFile;
 
+struct StorageSpaceInfo {
+  uint64_t totalBytes = 0;
+  uint64_t usedBytes = 0;
+};
+
 class HalStorage {
  public:
   HalStorage();
   bool begin();
   bool ready() const;
+  bool getSpaceInfo(StorageSpaceInfo& info, bool forceRefresh = false);
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
   // Read the entire file at `path` into a String. Returns empty string on failure.
   String readFile(const char* path);
