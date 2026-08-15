@@ -176,6 +176,28 @@ std::string bookDisplayTitle(const RecentBook& book) {
   if (dot != std::string::npos && dot > 0) name = name.substr(0, dot);
   return name;
 }
+
+bool isSubstackArticle(const RecentBook& book) { return book.path.rfind("/Substack/", 0) == 0; }
+
+void drawSubstackCard(GfxRenderer& renderer, const RecentBook& article, int x, int y, int w, int h) {
+  renderer.fillRoundedRect(x, y, w, h, kBookCornerRadius, Color::White);
+  renderer.fillRoundedRect(x + 12, y + 14, w - 24, 38, 4, Color::Black);
+  const char* label = "SUBSTACK";
+  const int labelWidth = renderer.getTextWidth(UI_10_FONT_ID, label, EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, x + (w - labelWidth) / 2, y + 23, label, false, EpdFontFamily::BOLD);
+  const std::string title = renderer.truncatedText(UI_12_FONT_ID, bookDisplayTitle(article).c_str(), w - 28,
+                                                    EpdFontFamily::BOLD);
+  const int titleWidth = renderer.getTextWidth(UI_12_FONT_ID, title.c_str(), EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, x + (w - titleWidth) / 2, y + h / 2 - 14, title.c_str(), true,
+                    EpdFontFamily::BOLD);
+  if (!article.author.empty()) {
+    const std::string author = renderer.truncatedText(UI_10_FONT_ID, article.author.c_str(), w - 32);
+    const int authorWidth = renderer.getTextWidth(UI_10_FONT_ID, author.c_str());
+    renderer.drawText(UI_10_FONT_ID, x + (w - authorWidth) / 2, y + h / 2 + 22, author.c_str());
+  }
+  renderer.drawLine(x + 24, y + h - 34, x + w - 24, y + h - 34, true);
+  renderer.drawRoundedRect(x, y, w, h, 1, kBookCornerRadius, true);
+}
 }  // namespace
 
 void FlowTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle) const {
@@ -239,8 +261,10 @@ void FlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
   if (count >= 3) drawSideCover((currentIndex + 1) % count, false, false);
 
   renderer.fillRoundedRect(centerLeft, centerY, kCenterCoverWidth, kCenterCoverHeight, kBookCornerRadius, Color::White);
-  if (!drawCoverBitmap(renderer, recentBooks[currentIndex], centerLeft, centerY, kCenterCoverWidth, kCenterCoverHeight,
-                       true)) {
+  if (isSubstackArticle(recentBooks[currentIndex])) {
+    drawSubstackCard(renderer, recentBooks[currentIndex], centerLeft, centerY, kCenterCoverWidth, kCenterCoverHeight);
+  } else if (!drawCoverBitmap(renderer, recentBooks[currentIndex], centerLeft, centerY, kCenterCoverWidth,
+                              kCenterCoverHeight, true)) {
     drawPlaceholderCover(renderer, centerLeft, centerY, kCenterCoverWidth, kCenterCoverHeight);
   }
   renderer.drawRoundedRect(centerLeft, centerY, kCenterCoverWidth, kCenterCoverHeight, 1, kBookCornerRadius, true);
@@ -266,8 +290,11 @@ void FlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
 void FlowTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
-  const int rowHeight = FlowMetrics::values.menuRowHeight;
   const int spacing = FlowMetrics::values.menuSpacing;
+  const int availableHeight = renderer.getScreenHeight() - FlowMetrics::values.buttonHintsHeight - rect.y -
+                              FlowMetrics::values.verticalSpacing;
+  const int fittedRowHeight = buttonCount > 0 ? (availableHeight - spacing * (buttonCount - 1)) / buttonCount : 0;
+  const int rowHeight = std::max(32, std::min(FlowMetrics::values.menuRowHeight, fittedRowHeight));
   const int menuLeft = std::max(FlowMetrics::values.contentSidePadding, rect.x + rect.width / 2 - 190);
   const int menuWidth = std::min(230, rect.x + rect.width - menuLeft - FlowMetrics::values.contentSidePadding);
 

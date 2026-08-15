@@ -136,6 +136,12 @@ class CrossPointWebServer {
   void handlePostOpdsServer();
   void handleDeleteOpdsServer();
 
+  // Substack public RSS feed handlers
+  void handleGetSubstackFeeds() const;
+  void handlePostSubstackFeed();
+  void handleImportSubstackFeeds();
+  void handleDeleteSubstackFeed();
+
   // Wi-Fi credential handlers
   void handleGetWifiNetworks() const;
   void handlePostWifiNetwork();
