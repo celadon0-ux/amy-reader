@@ -42,6 +42,9 @@ StorageCategory StorageAnalyzer::categoryForPath(const std::string& path) {
   if (isAtOrBelow(lower, "/.dictionaries") || isAtOrBelow(lower, "/dictionaries")) {
     return StorageCategory::Dictionaries;
   }
+  if (isAtOrBelow(lower, "/substack") && hasExtension(lower, ".epub")) {
+    return StorageCategory::Substack;
+  }
   if (hasExtension(lower, ".epub") || hasExtension(lower, ".txt") || hasExtension(lower, ".md") ||
       hasExtension(lower, ".xtc") || hasExtension(lower, ".xtch")) {
     return StorageCategory::Books;
@@ -55,6 +58,10 @@ StorageCategory StorageAnalyzer::categoryForPath(const std::string& path) {
 
 bool StorageAnalyzer::canDelete(const StorageCategory category, const std::string& path) {
   if (category == StorageCategory::Books) return true;
+  if (category == StorageCategory::Substack) {
+    const std::string lower = lowerCopy(path);
+    return isAtOrBelow(lower, "/substack") && hasExtension(lower, ".epub");
+  }
   if (category != StorageCategory::Images) return false;
   return isAtOrBelow(lowerCopy(path), "/screenshots");
 }

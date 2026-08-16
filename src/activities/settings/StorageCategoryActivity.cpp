@@ -8,6 +8,8 @@
 #include <utility>
 
 #include "MappedInputManager.h"
+#include "RecentBooksStore.h"
+#include "SubstackStore.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -45,6 +47,8 @@ const char* StorageCategoryActivity::categoryTitle() const {
   switch (category) {
     case StorageCategory::Books:
       return tr(STR_STORAGE_BOOKS);
+    case StorageCategory::Substack:
+      return tr(STR_STORAGE_SUBSTACK_ARTICLES);
     case StorageCategory::Images:
       return tr(STR_STORAGE_IMAGES);
     case StorageCategory::Fonts:
@@ -61,14 +65,34 @@ const char* StorageCategoryActivity::categoryTitle() const {
 }
 
 void StorageCategoryActivity::deleteItem(const StorageItem& item) {
-  if (!Storage.remove(item.path.c_str())) {
+  bool cleanupComplete = true;
+  bool managedCleanupAttempted = false;
+  if (category == StorageCategory::Substack) {
+    SubstackArticle article;
+    if (SUBSTACK_STORE.findArticleByPath(item.path, article)) {
+      managedCleanupAttempted = true;
+      cleanupComplete = SUBSTACK_STORE.deleteArticle(article.id);
+    } else {
+      cleanupComplete = Storage.remove(item.path.c_str());
+    }
+  } else {
+    cleanupComplete = Storage.remove(item.path.c_str());
+  }
+
+  const bool fileRemoved = !Storage.exists(item.path.c_str());
+  if (!fileRemoved) {
+    storageChanged = storageChanged || managedCleanupAttempted;
     deleteFailed = true;
     requestUpdate();
     return;
   }
-  if (category == StorageCategory::Books) clearBookCache(item.path);
+
+  if (category == StorageCategory::Books || category == StorageCategory::Substack) {
+    clearBookCache(item.path);
+  }
+  if (category == StorageCategory::Substack) RECENT_BOOKS.removeByPath(item.path);
   storageChanged = true;
-  deleteFailed = false;
+  deleteFailed = !cleanupComplete;
   const auto deleted = std::find_if(items.begin(), items.end(), [&item](const StorageItem& candidate) {
     return candidate.path == item.path;
   });

@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-enum class StorageCategory : uint8_t { Books, Images, Fonts, Dictionaries, ReadingCache, Other, Count };
+enum class StorageCategory : uint8_t { Books, Substack, Images, Fonts, Dictionaries, ReadingCache, Other, Count };
 
 struct StorageBreakdown {
   std::array<uint64_t, static_cast<size_t>(StorageCategory::Count)> bytes{};

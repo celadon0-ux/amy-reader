@@ -31,7 +31,8 @@ void accumulateFile(const std::string& path, const uint64_t size, void* opaque) 
   result.itemCounts[index]++;
   result.scannedBytes += size;
 
-  if (category == StorageCategory::Books || category == StorageCategory::Images ||
+  if (category == StorageCategory::Books || category == StorageCategory::Substack ||
+      category == StorageCategory::Images ||
       category == StorageCategory::Other) {
     snapshot.logicalItemCounts[index]++;
   }

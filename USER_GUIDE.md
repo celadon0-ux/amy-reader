@@ -316,10 +316,10 @@ The Settings screen allows you to configure the device's behavior. There are a f
 
 #### 3.6.5 Storage
 
-The **Storage** tab shows how much of the SD card is used and displays a segmented breakdown for books, images, fonts, dictionaries, reading cache, other files, and free space. Each category label also shows its item count; fonts, dictionaries, and cached books are counted as logical groups rather than as their internal files.
+The **Storage** tab shows how much of the SD card is used and displays a segmented breakdown for books, Substack articles, images, fonts, dictionaries, reading cache, other files, and free space. Each category label also shows its item count; fonts, dictionaries, and cached books are counted as logical groups rather than as their internal files.
 
 - Select a category to inspect up to its 25 largest files, ordered largest first.
-- Books and screenshots can be deleted after confirmation. Fonts open the existing font manager. Dictionaries and **Other** are inspection-only to protect files the reader may not recognize.
+- Books, Substack articles, and screenshots can be deleted after confirmation. Deleting a Substack article also removes its metadata, recent-book entry, and generated reading cache. Fonts open the existing font manager. Dictionaries and **Other** are inspection-only to protect files the reader may not recognize.
 - Select **Optimize Storage** to clear only generated reading cache. Your books, screenshots, fonts, dictionaries, settings, and reading progress are preserved. Cached pages are rebuilt automatically when needed.
 
 The initial scan also prepares each category's largest-file list. Opening, closing, or reopening a category therefore does not scan the card again; the summary refreshes only after a successful storage change.

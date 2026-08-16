@@ -92,6 +92,7 @@ void SettingsActivity::rebuildSettingsLists() {
 
   storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_OPTIMIZE, SettingAction::None));
   storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_BOOKS, SettingAction::None));
+  storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_SUBSTACK_ARTICLES, SettingAction::None));
   storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_IMAGES, SettingAction::None));
   storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_FONTS, SettingAction::None));
   storageSettings.push_back(SettingInfo::Action(StrId::STR_STORAGE_DICTIONARIES, SettingAction::None));
@@ -586,7 +587,15 @@ void SettingsActivity::activateStorageRow(const int row) {
     return;
   }
 
-  if (row == 3) {
+  static constexpr StorageCategory ROW_CATEGORIES[] = {
+      StorageCategory::Books,        StorageCategory::Substack,    StorageCategory::Images,
+      StorageCategory::Fonts,        StorageCategory::Dictionaries, StorageCategory::ReadingCache,
+      StorageCategory::Other};
+  static_assert(std::size(ROW_CATEGORIES) == static_cast<size_t>(StorageCategory::Count));
+  const int categoryRow = row - 1;
+  if (categoryRow < 0 || categoryRow >= static_cast<int>(std::size(ROW_CATEGORIES))) return;
+  const StorageCategory category = ROW_CATEGORIES[categoryRow];
+  if (category == StorageCategory::Fonts) {
     startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
                            [this](const ActivityResult& result) {
                              sdFontSystem.refreshIfDirty();
@@ -596,12 +605,6 @@ void SettingsActivity::activateStorageRow(const int row) {
     return;
   }
 
-  static constexpr StorageCategory ROW_CATEGORIES[] = {
-      StorageCategory::Books, StorageCategory::Images, StorageCategory::Fonts,
-      StorageCategory::Dictionaries, StorageCategory::ReadingCache, StorageCategory::Other};
-  const int categoryRow = row - 1;
-  if (categoryRow < 0 || categoryRow >= static_cast<int>(std::size(ROW_CATEGORIES))) return;
-  const StorageCategory category = ROW_CATEGORIES[categoryRow];
   const size_t categoryIndex = static_cast<size_t>(category);
   startActivityForResult(
       std::make_unique<StorageCategoryActivity>(renderer, mappedInput, category,
@@ -667,7 +670,8 @@ void SettingsActivity::renderStoragePanel() {
     const int innerHeight = barHeight - 2;
     uint64_t cumulative = 0;
     int currentX = innerX;
-    static constexpr Color COLORS[] = {Black, DarkGray, LightGray, Black, DarkGray, LightGray, White};
+    static constexpr Color COLORS[] = {Black, DarkGray, LightGray, Black, DarkGray, LightGray, Black, White};
+    static_assert(std::size(COLORS) == static_cast<size_t>(StorageCategory::Count) + 1);
     for (size_t i = 0; i < static_cast<size_t>(StorageCategory::Count) + 1; i++) {
       const uint64_t value = i < static_cast<size_t>(StorageCategory::Count)
                                  ? breakdown.bytes[i]
@@ -697,11 +701,15 @@ void SettingsActivity::renderStoragePanel() {
       });
 
   static constexpr StrId SINGULAR_IDS[] = {
-      StrId::STR_STORAGE_BOOK,       StrId::STR_STORAGE_IMAGE,       StrId::STR_STORAGE_FONT,
-      StrId::STR_STORAGE_DICTIONARY, StrId::STR_STORAGE_CACHED_BOOK, StrId::STR_STORAGE_OTHER_ITEM};
+      StrId::STR_STORAGE_BOOK,       StrId::STR_STORAGE_SUBSTACK_ARTICLE, StrId::STR_STORAGE_IMAGE,
+      StrId::STR_STORAGE_FONT,       StrId::STR_STORAGE_DICTIONARY,       StrId::STR_STORAGE_CACHED_BOOK,
+      StrId::STR_STORAGE_OTHER_ITEM};
   static constexpr StrId PLURAL_IDS[] = {
-      StrId::STR_STORAGE_BOOKS,       StrId::STR_STORAGE_IMAGES,       StrId::STR_STORAGE_FONTS,
-      StrId::STR_STORAGE_DICTIONARIES, StrId::STR_STORAGE_CACHED_BOOKS, StrId::STR_STORAGE_OTHER_ITEMS};
+      StrId::STR_STORAGE_BOOKS,       StrId::STR_STORAGE_SUBSTACK_ARTICLES, StrId::STR_STORAGE_IMAGES,
+      StrId::STR_STORAGE_FONTS,       StrId::STR_STORAGE_DICTIONARIES,      StrId::STR_STORAGE_CACHED_BOOKS,
+      StrId::STR_STORAGE_OTHER_ITEMS};
+  static_assert(std::size(SINGULAR_IDS) == static_cast<size_t>(StorageCategory::Count));
+  static_assert(std::size(PLURAL_IDS) == static_cast<size_t>(StorageCategory::Count));
   const int categoryTop = storageCategoryListTop();
   const int categoryHeight = storageCategoryListHeight();
   GUI.drawList(

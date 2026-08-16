@@ -17,6 +17,17 @@ TEST(StorageAnalyzerTest, GivesReaderManagedFoldersPriorityOverExtensions) {
   EXPECT_EQ(StorageAnalyzer::categoryForPath("/dictionaries/readme.txt"), StorageCategory::Dictionaries);
 }
 
+TEST(StorageAnalyzerTest, SeparatesSubstackArticleEpubsFromBooks) {
+  EXPECT_EQ(StorageAnalyzer::categoryForPath("/Substack/article.epub"), StorageCategory::Substack);
+  EXPECT_EQ(StorageAnalyzer::categoryForPath("/Substack/Publication/article.epub"), StorageCategory::Substack);
+  EXPECT_EQ(StorageAnalyzer::categoryForPath("/SUBSTACK/Publication/ARTICLE.EPUB"), StorageCategory::Substack);
+  EXPECT_EQ(StorageAnalyzer::categoryForPath("/Substack/Publication/notes.txt"), StorageCategory::Books);
+  EXPECT_EQ(StorageAnalyzer::categoryForPath("/Substack/Publication/notes.json"), StorageCategory::Other);
+  EXPECT_EQ(StorageAnalyzer::categoryForPath("/.crosspoint/substack/articles/id.json"), StorageCategory::Other);
+  EXPECT_EQ(StorageAnalyzer::categoryForPath("/Substackish/Publication/article.epub"), StorageCategory::Books);
+  EXPECT_EQ(StorageAnalyzer::categoryForPath("/Books/article.epub"), StorageCategory::Books);
+}
+
 TEST(StorageAnalyzerTest, LeavesUnknownFilesInOther) {
   EXPECT_EQ(StorageAnalyzer::categoryForPath("/music/album.flac"), StorageCategory::Other);
   EXPECT_EQ(StorageAnalyzer::categoryForPath("/archive/book.epub.bak"), StorageCategory::Other);
@@ -24,6 +35,10 @@ TEST(StorageAnalyzerTest, LeavesUnknownFilesInOther) {
 
 TEST(StorageAnalyzerTest, OnlyOffersSafeUserContentForDeletion) {
   EXPECT_TRUE(StorageAnalyzer::canDelete(StorageCategory::Books, "/Books/novel.epub"));
+  EXPECT_TRUE(StorageAnalyzer::canDelete(StorageCategory::Substack, "/Substack/Publication/article.epub"));
+  EXPECT_TRUE(StorageAnalyzer::canDelete(StorageCategory::Substack, "/SUBSTACK/Publication/ARTICLE.EPUB"));
+  EXPECT_FALSE(StorageAnalyzer::canDelete(StorageCategory::Substack, "/Books/article.epub"));
+  EXPECT_FALSE(StorageAnalyzer::canDelete(StorageCategory::Substack, "/Substack/Publication/notes.txt"));
   EXPECT_TRUE(StorageAnalyzer::canDelete(StorageCategory::Images, "/screenshots/page.bmp"));
   EXPECT_TRUE(StorageAnalyzer::canDelete(StorageCategory::Images, "/SCREENSHOTS/page.PNG"));
   EXPECT_FALSE(StorageAnalyzer::canDelete(StorageCategory::Images, "/covers/page.png"));
@@ -46,6 +61,7 @@ TEST(StorageAnalyzerTest, FormatsLogicalCountsWithSingularAndPluralLabels) {
     const char* plural;
   };
   constexpr Labels labels[] = {{"Book", "Books"},
+                               {"Substack Article", "Substack Articles"},
                                {"Image", "Images"},
                                {"Font", "Fonts"},
                                {"Dictionary", "Dictionaries"},
