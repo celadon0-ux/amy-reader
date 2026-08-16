@@ -51,6 +51,7 @@ class CrossPointWebServerActivity final : public Activity {
 
   // Cached signal-strength bracket (0..4) for the WiFi indicator.
   int lastWifiBars = 0;
+  const bool returnToSubstack;
 
   void renderServerRunning() const;
   void renderWifiIndicator(int subHeaderTop) const;
@@ -61,8 +62,9 @@ class CrossPointWebServerActivity final : public Activity {
   void startWebServer();
 
  public:
-  explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("CrossPointWebServer", renderer, mappedInput) {}
+  explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                       bool returnToSubstackValue = false)
+      : Activity("CrossPointWebServer", renderer, mappedInput), returnToSubstack(returnToSubstackValue) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;

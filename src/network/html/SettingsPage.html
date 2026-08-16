@@ -301,6 +301,7 @@
   </div>
 
   <div id="wifi-container"></div>
+  <div id="substack-container"></div>
   <div id="opds-container"></div>
 
   <div class="card">
@@ -711,6 +712,95 @@
     }
   }
 
+  // --- Substack Feed Management ---
+  // Public RSS feeds only. Article downloads remain a manual action on the reader.
+  let substackFeeds = [];
+
+  function renderSubstackFeed(feed, idx) {
+    const isNew = idx === -1;
+    const id = isNew ? 'new' : idx;
+    return '<div class="opds-server" id="substack-' + id + '">' +
+      '<div class="setting-row"><span class="setting-name">Publication name (optional)</span>' +
+        '<span class="setting-control"><input type="text" id="substack-name-' + id + '" value="' + escapeHtml(feed.name || '') + '"></span></div>' +
+      '<div class="setting-row"><span class="setting-name">Publication or feed URL</span>' +
+        '<span class="setting-control"><input type="text" id="substack-url-' + id + '" value="' + escapeHtml(feed.url || '') + '" placeholder="https://example.substack.com"></span></div>' +
+      '<div class="setting-row"><span class="setting-name">Include when refreshing</span>' +
+        '<span class="setting-control"><label class="toggle-switch"><input type="checkbox" id="substack-enabled-' + id + '" ' + (feed.enabled !== false ? 'checked' : '') + '><span class="toggle-slider"></span></label></span></div>' +
+      (feed.lastError ? '<p style="color:#c0392b">Last error: ' + escapeHtml(feed.lastError) + '</p>' : '') +
+      '<div class="opds-actions"><button class="btn-small btn-save-server" onclick="saveSubstackFeed(' + idx + ')">Save</button>' +
+        (isNew ? '' : '<button class="btn-small btn-delete" onclick="deleteSubstackFeed(' + idx + ')">Delete</button>') +
+      '</div></div>';
+  }
+
+  function renderSubstackSection() {
+    const container = document.getElementById('substack-container');
+    let html = '<div class="card"><h2>Substack Feeds</h2>' +
+      '<p style="color:var(--label-color)">Add public Substack publication URLs. The reader fetches articles only when you choose <strong>Fetch new articles</strong>.</p>';
+    if (!substackFeeds.length) html += '<p style="text-align:center;color:var(--label-color)">No feeds configured</p>';
+    substackFeeds.forEach(function(feed, idx) { html += renderSubstackFeed(feed, idx); });
+    html += '<div style="margin-top:12px;text-align:center"><button class="btn-small btn-add" onclick="addSubstackFeed()">+ Add Feed</button></div>' +
+      '<div style="margin-top:18px"><label class="setting-name" for="substack-import">Import several URLs</label>' +
+      '<textarea id="substack-import" rows="4" style="box-sizing:border-box;width:100%;margin-top:8px;padding:8px" placeholder="One URL per line"></textarea>' +
+      '<div style="margin-top:8px"><button class="btn-small btn-add" onclick="importSubstackFeeds()">Import URLs</button></div></div></div>';
+    container.innerHTML = html;
+  }
+
+  async function loadSubstackFeeds() {
+    try {
+      const response = await fetch('/api/substack');
+      if (!response.ok) throw new Error('Failed to load');
+      substackFeeds = await response.json();
+      renderSubstackSection();
+    } catch (e) {
+      console.error('Substack feed load error:', e);
+    }
+  }
+
+  function addSubstackFeed() {
+    if (document.getElementById('substack-new')) return;
+    const container = document.getElementById('substack-container');
+    const addButton = container.querySelector('.btn-add').parentElement;
+    addButton.insertAdjacentHTML('beforebegin', renderSubstackFeed({name:'',url:'',enabled:true}, -1));
+  }
+
+  async function saveSubstackFeed(idx) {
+    const id = idx === -1 ? 'new' : idx;
+    const data = {
+      name: document.getElementById('substack-name-' + id).value.trim(),
+      url: document.getElementById('substack-url-' + id).value.trim(),
+      enabled: document.getElementById('substack-enabled-' + id).checked
+    };
+    if (!data.url) { showMessage('A Substack URL is required.', true); return; }
+    if (idx >= 0) data.index = idx;
+    try {
+      const response = await fetch('/api/substack', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+      if (!response.ok) throw new Error(await response.text());
+      showMessage('Substack feed saved.', false);
+      await loadSubstackFeeds();
+    } catch (e) { showMessage('Error: ' + e.message, true); }
+  }
+
+  async function deleteSubstackFeed(idx) {
+    if (!confirm('Delete this feed? Downloaded articles will remain.')) return;
+    try {
+      const response = await fetch('/api/substack/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({index:idx})});
+      if (!response.ok) throw new Error(await response.text());
+      showMessage('Substack feed deleted.', false);
+      await loadSubstackFeeds();
+    } catch (e) { showMessage('Error: ' + e.message, true); }
+  }
+
+  async function importSubstackFeeds() {
+    const text = document.getElementById('substack-import').value;
+    if (!text.trim()) { showMessage('Paste at least one URL.', true); return; }
+    try {
+      const response = await fetch('/api/substack/import', {method:'POST', headers:{'Content-Type':'text/plain'}, body:text});
+      if (!response.ok) throw new Error(await response.text());
+      showMessage(await response.text(), false);
+      await loadSubstackFeeds();
+    } catch (e) { showMessage('Error: ' + e.message, true); }
+  }
+
   // --- OPDS Server Management ---
   // Dynamically renders an editable list of OPDS servers, communicating with the
   // /api/opds REST endpoints. Password fields are never pre-filled for security;
@@ -826,6 +916,7 @@
   }
 
   loadWifiNetworks();
+  loadSubstackFeeds();
   loadOpdsServers();
 </script>
 </body>

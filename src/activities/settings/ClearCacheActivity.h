@@ -21,7 +21,10 @@ class ClearCacheActivity final : public Activity {
 
   State state = WARNING;
 
-  void goBack() { finish(); }
+  void goBack() {
+    setResult(StorageMutationResult{clearedCount > 0});
+    finish();
+  }
 
   int clearedCount = 0;
   int failedCount = 0;

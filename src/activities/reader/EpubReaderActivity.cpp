@@ -33,6 +33,7 @@
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
+#include "SubstackStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "components/UITheme.h"
@@ -417,6 +418,14 @@ void EpubReaderActivity::loop() {
   // End-of-Book screen reached (currentSpineIndex == spine count) means the book is
   // finished. Two independent finished-book features key off this same condition.
   const bool atEndOfBook = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
+
+  // Substack articles become read only when the reader actually reaches the end.
+  // Keep them in the ordinary recents list: Flow's carousel has the same semantics
+  // for articles and books, unless the global remove-read-books setting says otherwise.
+  if (atEndOfBook && !substackCompletionHandled && epub->getPath().rfind("/Substack/", 0) == 0) {
+    SUBSTACK_STORE.markReadByPath(epub->getPath(), true);
+    substackCompletionHandled = true;
+  }
 
   // Drop this book from the Recent Books list; if the reader then pages back into the book,
   // re-add it. So removal only sticks if the reader leaves while still on the End-of-Book

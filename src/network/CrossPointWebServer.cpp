@@ -23,6 +23,7 @@
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
 #include "html/SettingsPageHtml.generated.h"
+#include "SubstackStore.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "util/BookCacheUtils.h"
 #include "util/TaskWatchdog.h"
@@ -177,6 +178,11 @@ void CrossPointWebServer::begin() {
   server->on("/api/opds", HTTP_GET, [this] { handleGetOpdsServers(); });
   server->on("/api/opds", HTTP_POST, [this] { handlePostOpdsServer(); });
   server->on("/api/opds/delete", HTTP_POST, [this] { handleDeleteOpdsServer(); });
+
+  server->on("/api/substack", HTTP_GET, [this] { handleGetSubstackFeeds(); });
+  server->on("/api/substack", HTTP_POST, [this] { handlePostSubstackFeed(); });
+  server->on("/api/substack/import", HTTP_POST, [this] { handleImportSubstackFeeds(); });
+  server->on("/api/substack/delete", HTTP_POST, [this] { handleDeleteSubstackFeed(); });
 
   // Wi-Fi credential endpoints
   server->on("/api/wifi", HTTP_GET, [this] { handleGetWifiNetworks(); });
@@ -1446,6 +1452,86 @@ void CrossPointWebServer::handleDeleteOpdsServer() {
   OPDS_STORE.removeServer(static_cast<size_t>(idx));
   LOG_DBG("WEB", "Deleted OPDS server at index %d", idx);
   server->send(200, "text/plain", "OK");
+}
+
+// ---- Substack public RSS feeds API ----
+
+void CrossPointWebServer::handleGetSubstackFeeds() const {
+  const auto& feeds = SUBSTACK_STORE.feeds();
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  server->sendContent("[");
+  char output[768];
+  JsonDocument doc;
+  for (size_t i = 0; i < feeds.size(); ++i) {
+    doc.clear();
+    doc["index"] = i;
+    doc["name"] = feeds[i].name;
+    doc["url"] = feeds[i].url;
+    doc["enabled"] = feeds[i].enabled;
+    doc["lastFetchAt"] = feeds[i].lastFetchAt;
+    doc["lastError"] = feeds[i].lastError;
+    const size_t written = serializeJson(doc, output, sizeof(output));
+    if (written >= sizeof(output)) continue;
+    if (i) server->sendContent(",");
+    server->sendContent(output);
+  }
+  server->sendContent("]");
+  server->sendContent("");
+}
+
+void CrossPointWebServer::handlePostSubstackFeed() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "text/plain", "Missing JSON body");
+    return;
+  }
+  JsonDocument doc;
+  if (const auto error = deserializeJson(doc, server->arg("plain")); error) {
+    server->send(400, "text/plain", String("Invalid JSON: ") + error.c_str());
+    return;
+  }
+  const std::string url = doc["url"] | std::string();
+  const std::string name = doc["name"] | std::string();
+  const bool enabled = doc["enabled"] | true;
+  bool ok = false;
+  if (doc["index"].is<int>()) {
+    const int index = doc["index"].as<int>();
+    ok = index >= 0 && SUBSTACK_STORE.updateFeed(static_cast<size_t>(index), url, name, enabled);
+  } else {
+    ok = SUBSTACK_STORE.addFeed(url, name);
+    if (ok && !enabled) {
+      const size_t index = SUBSTACK_STORE.feeds().size() - 1;
+      ok = SUBSTACK_STORE.updateFeed(index, url, name, false);
+    }
+  }
+  server->send(ok ? 200 : 400, "text/plain", ok ? "OK" : "Invalid, duplicate, or feed limit reached");
+}
+
+void CrossPointWebServer::handleImportSubstackFeeds() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "text/plain", "Missing body");
+    return;
+  }
+  std::string text = server->arg("plain").c_str();
+  JsonDocument doc;
+  if (!deserializeJson(doc, text) && doc["text"].is<const char*>()) text = doc["text"].as<const char*>();
+  const size_t added = SUBSTACK_STORE.addFeedsFromText(text);
+  server->send(200, "text/plain", String("Added ") + String(added) + " feed(s)");
+}
+
+void CrossPointWebServer::handleDeleteSubstackFeed() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "text/plain", "Missing JSON body");
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, server->arg("plain")) || !doc["index"].is<int>()) {
+    server->send(400, "text/plain", "Invalid index");
+    return;
+  }
+  const int index = doc["index"].as<int>();
+  const bool ok = index >= 0 && SUBSTACK_STORE.removeFeed(static_cast<size_t>(index));
+  server->send(ok ? 200 : 400, "text/plain", ok ? "OK" : "Invalid index");
 }
 
 // ---- Wi-Fi Credentials API ----

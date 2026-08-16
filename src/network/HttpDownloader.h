@@ -21,6 +21,11 @@ class HttpDownloader {
     HTTP_ERROR,
     FILE_ERROR,
     ABORTED,
+    TLS_MEMORY_ERROR,
+    // A body without Content-Length ended without the transport confirming
+    // framing. A structured streaming caller may accept it only after its own
+    // parser verifies a complete document.
+    UNKNOWN_LENGTH_RESPONSE,
   };
 
   /**
@@ -37,6 +42,15 @@ class HttpDownloader {
    */
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username = "",
                        const std::string& password = "");
+
+  /**
+   * Streaming fetch variant that preserves the failure category. On wolfSSL
+   * builds, HTTPS is rejected before the handshake when the heap cannot meet
+   * the known-safe TLS headroom. Existing callers keep their bool API and
+   * behavior; memory-sensitive callers can avoid a series of doomed retries.
+   */
+  static DownloadError fetchUrlWithResult(const std::string& url, const DataCallback& onData,
+                                          const std::string& username = "", const std::string& password = "");
 
   /**
    * Download a file to the SD card with optional credentials.

@@ -33,10 +33,31 @@ constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr size_t READ_CHUNK = 1024;
 constexpr int MAX_REDIRECTS = 5;
 
+#if defined(FREEINK_NET_WOLFSSL)
+// Field measurements from the X3 show wolfSSL's ECC/X25519 handshake is
+// reliable above these values. A fragmented 24 KiB heap fails with MEMORY_E
+// before an HTTP request is sent. Keep this check on the result-returning API
+// so established OPDS/download behavior is unchanged.
+constexpr uint32_t MIN_TLS_FREE_HEAP = 35000;
+constexpr uint32_t MIN_TLS_MAX_BLOCK = 20000;
+
+bool isHttps(const std::string& url) { return url.rfind("https://", 0) == 0; }
+
+bool hasTlsHeadroom(const std::string& url) {
+  if (!isHttps(url)) return true;
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t maxBlock = ESP.getMaxAllocHeap();
+  LOG_DBG("HTTP", "TLS heap preflight: free=%u max-block=%u", static_cast<unsigned>(freeHeap),
+          static_cast<unsigned>(maxBlock));
+  return freeHeap >= MIN_TLS_FREE_HEAP && maxBlock >= MIN_TLS_MAX_BLOCK;
+}
+#endif
+
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
   HttpDownloader::ProgressCallback progress;
   bool* cancelFlag = nullptr;
+  bool forceConnectionClose = false;
   size_t total = 0;
   size_t downloaded = 0;
 };
@@ -51,8 +72,13 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
   std::string url = startUrl;
 
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
+    const uint32_t heapBefore = ESP.getFreeHeap();
+    const uint32_t maxBlockBefore = ESP.getMaxAllocHeap();
+    LOG_DBG("HTTP", "wolfSSL hop %d heap: free=%u max-block=%u", hop, static_cast<unsigned>(heapBefore),
+            static_cast<unsigned>(maxBlockBefore));
     freeink::SecureHttpClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
+    http.setReuse(!sink.forceConnectionClose);
     http.setInsecure();
     if (!http.begin(url)) {
       LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
@@ -82,7 +108,14 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
 
     if (http.aborted()) return HttpDownloader::ABORTED;
     if (status < 0) {
-      LOG_ERR("HTTP", "wolfSSL request failed: %s", url.c_str());
+      const uint32_t heapAfter = ESP.getFreeHeap();
+      const uint32_t maxBlockAfter = ESP.getMaxAllocHeap();
+      LOG_ERR("HTTP", "wolfSSL request failed: %s (before free=%u max=%u; after free=%u max=%u)", url.c_str(),
+              static_cast<unsigned>(heapBefore), static_cast<unsigned>(maxBlockBefore),
+              static_cast<unsigned>(heapAfter), static_cast<unsigned>(maxBlockAfter));
+      if (isHttps(url) && (heapBefore < MIN_TLS_FREE_HEAP || maxBlockBefore < MIN_TLS_MAX_BLOCK)) {
+        return HttpDownloader::TLS_MEMORY_ERROR;
+      }
       return HttpDownloader::HTTP_ERROR;
     }
     if (isRedirect(status)) {
@@ -100,6 +133,8 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     if (http.callbackAborted()) return HttpDownloader::FILE_ERROR;
     if (!http.responseComplete()) {
       LOG_ERR("HTTP", "wolfSSL incomplete: got %zu of %zu bytes", sink.downloaded, sink.total);
+      if (!http.hasContentLength() && sink.downloaded > 0)
+        return HttpDownloader::UNKNOWN_LENGTH_RESPONSE;
       return HttpDownloader::HTTP_ERROR;
     }
     return HttpDownloader::OK;
@@ -256,6 +291,26 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
   Sink sink;
   sink.write = onData;
   return runGetSecure(url, username, password, sink) == OK;
+}
+
+HttpDownloader::DownloadError HttpDownloader::fetchUrlWithResult(const std::string& url, const DataCallback& onData,
+                                                                 const std::string& username,
+                                                                 const std::string& password) {
+  LOG_DBG("HTTP", "Fetching with result: %s", url.c_str());
+#if defined(FREEINK_NET_WOLFSSL)
+  if (!hasTlsHeadroom(url)) {
+    LOG_ERR("HTTP", "TLS skipped: insufficient contiguous heap for secure handshake");
+    return TLS_MEMORY_ERROR;
+  }
+#endif
+  Sink sink;
+  sink.write = onData;
+  // This streaming API is used for large RSS documents. The client object is
+  // not reused after the call, and asking the server to close removes any
+  // ambiguity at the end of an otherwise unframed response without changing
+  // the established OPDS/file-download path.
+  sink.forceConnectionClose = true;
+  return runGetSecure(url, username, password, sink);
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,

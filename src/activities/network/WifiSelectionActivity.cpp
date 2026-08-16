@@ -76,18 +76,33 @@ void WifiSelectionActivity::onEnter() {
 void WifiSelectionActivity::onExit() {
   Activity::onExit();
 
-  LOG_DBG("WIFI", "Free heap at onExit start: %d bytes", ESP.getFreeHeap());
+  LOG_DBG("WIFI", "Heap at onExit start: free=%u max-block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
 
   // Stop any ongoing WiFi scan
   LOG_DBG("WIFI", "Deleting WiFi scan...");
   WiFi.scanDelete();
-  LOG_DBG("WIFI", "Free heap after scanDelete: %d bytes", ESP.getFreeHeap());
+  delay(1);  // Give the Wi-Fi driver task a scheduling point to release its scan list.
+  LOG_DBG("WIFI", "Heap after scanDelete: free=%u max-block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
+
+  // onExit runs before the activity destructor. Release scan/UI storage here
+  // so the parent result handler starts with a contiguous heap and the log
+  // reflects the memory actually available to its TLS client.
+  std::vector<WifiNetworkInfo>().swap(networks);
+  std::vector<std::string>().swap(autoAttemptedSsids);
+  std::string().swap(selectedSSID);
+  std::string().swap(connectedIP);
+  std::string().swap(connectionError);
+  std::string().swap(enteredPassword);
+  std::string().swap(cachedMacAddress);
 
   // Note: We do NOT disconnect WiFi here - the parent activity
   // (CrossPointWebServerActivity) manages WiFi connection state. We just clean
   // up the scan and task.
 
-  LOG_DBG("WIFI", "Free heap at onExit end: %d bytes", ESP.getFreeHeap());
+  LOG_DBG("WIFI", "Heap at onExit end: free=%u max-block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
 }
 
 void WifiSelectionActivity::startWifiScan(const bool autoScan) {
