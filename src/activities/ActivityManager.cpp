@@ -17,6 +17,7 @@
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
+#include "substack/SubstackActivity.h"
 #include "util/FullScreenMessageActivity.h"
 
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
@@ -184,8 +185,8 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
   }
 }
 
-void ActivityManager::goToFileTransfer() {
-  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput));
+void ActivityManager::goToFileTransfer(bool returnToSubstack) {
+  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, returnToSubstack));
 }
 
 void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
@@ -196,6 +197,10 @@ void ActivityManager::goToFileBrowser(std::string path) {
 
 void ActivityManager::goToRecentBooks() {
   replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput));
+}
+
+void ActivityManager::goToSubstack() {
+  replaceActivity(std::make_unique<SubstackActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToBrowser() {
@@ -230,6 +235,8 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
       initialMenuItem = HomeMenuItem::FILE_BROWSER;
     } else if (activityName == "RecentBooks") {
       initialMenuItem = HomeMenuItem::RECENTS;
+    } else if (activityName == "Substack") {
+      initialMenuItem = HomeMenuItem::SUBSTACK;
     } else if (activityName == "OpdsBookBrowser") {
       initialMenuItem = HomeMenuItem::OPDS_BROWSER;
     } else if (activityName == "CrossPointWebServer") {

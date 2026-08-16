@@ -9,6 +9,7 @@
 #include <Utf8.h>
 #include <Xtc.h>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -21,7 +22,7 @@
 #include "fontIds.h"
 
 int HomeActivity::getMenuItemCount() const {
-  int count = 4;  // File Browser, Recents, File transfer, Settings
+  int count = 5;  // File Browser, Recents, Substack, File transfer, Settings
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -33,8 +34,9 @@ int HomeActivity::getMenuItemCount() const {
 
 void HomeActivity::loadRecentBooks(int maxBooks) {
   recentBooks.clear();
+  if (maxBooks <= 0) return;
   const auto& books = RECENT_BOOKS.getBooks();
-  recentBooks.reserve(std::min(static_cast<int>(books.size()), maxBooks));
+  recentBooks.reserve(maxBooks);
 
   for (const RecentBook& book : books) {
     // Limit to maximum number of recent books
@@ -191,6 +193,9 @@ void HomeActivity::loop() {
       case HomeMenuItem::RECENTS:
         onRecentsOpen();
         break;
+      case HomeMenuItem::SUBSTACK:
+        onSubstackOpen();
+        break;
       case HomeMenuItem::OPDS_BROWSER:
         onOpdsBrowserOpen();
         break;
@@ -212,6 +217,9 @@ void HomeActivity::loop() {
         break;
       case HomeMenuItem::RECENTS:
         onRecentsOpen();
+        break;
+      case HomeMenuItem::SUBSTACK:
+        onSubstackOpen();
         break;
       case HomeMenuItem::OPDS_BROWSER:
         onOpdsBrowserOpen();
@@ -311,9 +319,12 @@ void HomeActivity::loop() {
     }
 
     const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+    const int menuAvailable = renderer.getScreenHeight() - metrics.buttonHintsHeight - menuTop - metrics.verticalSpacing;
+    const int flowRowHeight = std::max(32, std::min(metrics.menuRowHeight,
+        (menuAvailable - metrics.menuSpacing * (flowMenuCount - 1)) / std::max(1, flowMenuCount)));
     int menuRow = -1;
-    const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, metrics.menuRowHeight + metrics.menuSpacing,
-                                                flowMenuCount, 0, INT32_MAX, metrics.menuRowHeight);
+    const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, flowRowHeight + metrics.menuSpacing,
+                                                flowMenuCount, 0, INT32_MAX, flowRowHeight);
     if (menuTouch != MappedInputManager::RowTouch::None) {
       flowFocusZone = FlowFocusZone::MENU;
       flowMenuSelectorIndex = menuRow;
@@ -442,13 +453,13 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings};
+  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), "Substack",
+                                        tr(STR_FILE_TRANSFER), tr(STR_SETTINGS_TITLE)};
+  std::vector<UIIcon> menuIcons = {Folder, Recent, Book, Transfer, Settings};
 
   if (hasOpdsServers) {
-    menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + 2, Library);
+    menuItems.insert(menuItems.begin() + 3, tr(STR_OPDS_BROWSER));
+    menuIcons.insert(menuIcons.begin() + 3, Library);
   }
 
   if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
@@ -496,6 +507,8 @@ void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToR
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
 
 void HomeActivity::onRecentsOpen() { activityManager.goToRecentBooks(); }
+
+void HomeActivity::onSubstackOpen() { activityManager.goToSubstack(); }
 
 void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 
