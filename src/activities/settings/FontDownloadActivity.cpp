@@ -39,9 +39,14 @@ void FontDownloadActivity::onExit() {
   }
 }
 
+void FontDownloadActivity::finishWithStorageResult() {
+  setResult(StorageMutationResult{storageChanged_});
+  finish();
+}
+
 void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
-    finish();
+    finishWithStorageResult();
     return;
   }
 
@@ -296,6 +301,9 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     FontInstaller::buildFontPath(family.name.c_str(), file.name.c_str(), destPath, sizeof(destPath));
 
     std::string url = baseUrl_ + file.name;
+    // downloadToFile replaces or creates the destination before starting the
+    // transfer, so even an aborted or failed transfer is a real SD mutation.
+    storageChanged_ = true;
 
     auto result = HttpDownloader::downloadToFile(
         url, destPath,
@@ -408,6 +416,7 @@ void FontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& resu
     fontInstaller_.refreshRegistry();
     family.installed = false;
     family.hasUpdate = false;
+    storageChanged_ = true;
   }
 
   requestUpdate();
@@ -455,7 +464,7 @@ void FontDownloadActivity::loop() {
     };
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      finish();
+      finishWithStorageResult();
       return;
     }
 
