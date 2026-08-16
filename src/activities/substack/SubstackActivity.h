@@ -1,7 +1,7 @@
 #pragma once
 
+#include <memory>
 #include <string>
-#include <vector>
 
 #include "SubstackStore.h"
 #include "activities/Activity.h"
@@ -21,17 +21,27 @@ class SubstackActivity final : public Activity {
 
  private:
   void reload();
+  void ensureSelectedPageLoaded();
   void activate();
   void beginFetch();
   void showArticleActions();
   void deleteSelected();
-  std::string subtitleFor(const SubstackArticle& article) const;
+  size_t pageCapacity() const;
+  size_t pageOffsetForSelection() const;
+  const SubstackArticleListItem* rowForListIndex(int index) const;
+  bool loadSelectedArticle(SubstackArticle& article) const;
+  std::string subtitleFor(const SubstackArticleListItem& article) const;
 
   OptionPopup popup;
-  std::vector<SubstackArticle> articles;
+  std::unique_ptr<SubstackArticleListItem[]> articles;
+  size_t loadedArticleCount = 0;
+  size_t articlePageOffset = 0;
+  size_t totalArticleCount = 0;
   uint64_t visibleArticleBytes = 0;
   uint32_t visibleUnreadCount = 0;
   int selectedIndex = 0;
   bool syncing = false;
+  bool reloadPending = false;
+  SubstackStore::ArticleListResult menuLoadResult = SubstackStore::ArticleListResult::Ok;
   std::string syncStatus;
 };

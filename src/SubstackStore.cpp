@@ -1,5 +1,6 @@
 #include "SubstackStore.h"
 
+#include <Arduino.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <mbedtls/sha256.h>
@@ -8,13 +9,19 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
+#include <memory>
+#include <new>
 
 namespace {
 constexpr const char* ROOT = "/.crosspoint/substack";
 constexpr const char* ARTICLE_META_DIR = "/.crosspoint/substack/articles";
 constexpr const char* ARTICLE_INDEX_PATH = "/.crosspoint/substack/article-index.jsonl";
-constexpr const char* ARTICLE_INDEX_HEADER = "# amy-substack-index-v1";
+// V2 indexes only articles whose EPUB is actually present. Metadata is kept
+// for missing files so a later feed refresh can repair them without losing
+// read state, but a stale record must never masquerade as an openable article.
+constexpr const char* ARTICLE_INDEX_HEADER = "# amy-substack-index-v2-files-only";
 
 std::string trim(std::string value) {
   const auto notSpace = [](unsigned char c) { return !std::isspace(c); };
@@ -31,6 +38,26 @@ uint64_t jsonU64(JsonVariantConst value) {
   if (value.is<uint64_t>()) return value.as<uint64_t>();
   if (value.is<const char*>()) return strtoull(value.as<const char*>(), nullptr, 10);
   return 0;
+}
+
+template <size_t N>
+void copyJsonString(char (&target)[N], JsonVariantConst value) {
+  const char* source = value | "";
+  snprintf(target, N, "%s", source);
+}
+
+struct ArticleSortRecord {
+  char id[33] = {};
+  uint64_t publishedAt = 0;
+  uint64_t downloadedAt = 0;
+  bool read = false;
+};
+
+bool articleBefore(const ArticleSortRecord& a, const ArticleSortRecord& b) {
+  if (a.read != b.read) return !a.read;
+  if (a.publishedAt != b.publishedAt) return a.publishedAt > b.publishedAt;
+  if (a.downloadedAt != b.downloadedAt) return a.downloadedAt > b.downloadedAt;
+  return strcmp(a.id, b.id) < 0;
 }
 }  // namespace
 
@@ -314,33 +341,46 @@ bool SubstackStore::loadArticle(const std::string& id, SubstackArticle& article)
   return readJsonRecovering(articleMetadataPath(id), doc) && articleFromJson(doc.as<JsonVariantConst>(), article);
 }
 
-std::vector<SubstackArticle> SubstackStore::listArticles(size_t limit, uint64_t* totalBytes,
-                                                         uint32_t* unreadCount) const {
-  limit = std::min(limit, MAX_VISIBLE_ARTICLES);
+SubstackStore::ArticleListResult SubstackStore::listArticlePage(
+    const size_t offset, SubstackArticleListItem* items, const size_t capacity, size_t* loadedCount,
+    size_t* totalCount, uint64_t* totalBytes, uint32_t* unreadCount) const {
+  if (loadedCount) *loadedCount = 0;
+  if (totalCount) *totalCount = 0;
+  if (capacity > 0 && !items) return ArticleListResult::LowMemory;
+  if (!readArticleIndexPage(offset, items, capacity, loadedCount, totalCount, totalBytes, unreadCount)) {
+    const ArticleListResult rebuilt = rebuildArticleIndex();
+    if (rebuilt != ArticleListResult::Ok) return rebuilt;
+    if (!readArticleIndexPage(offset, items, capacity, loadedCount, totalCount, totalBytes, unreadCount))
+      return ArticleListResult::StorageError;
+  }
+  LOG_INF("SUBSTORE", "Article page: offset=%u returned=%u total=%u", static_cast<unsigned>(offset),
+          static_cast<unsigned>(loadedCount ? *loadedCount : 0),
+          static_cast<unsigned>(totalCount ? *totalCount : 0));
+  return ArticleListResult::Ok;
+}
+
+SubstackStore::ArticleListResult SubstackStore::rebuildArticleIndex() const {
+  std::unique_ptr<ArticleSortRecord[]> records(
+      new (std::nothrow) ArticleSortRecord[MAX_VISIBLE_ARTICLES]);
+  if (!records) {
+    LOG_ERR("SUBSTORE", "Not enough contiguous heap for compact article index keys: need=%u max-block=%u",
+            static_cast<unsigned>(sizeof(ArticleSortRecord) * MAX_VISIBLE_ARTICLES),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    return ArticleListResult::LowMemory;
+  }
+
+  size_t recordCount = 0;
   uint64_t indexedBytes = 0;
   uint32_t indexedUnread = 0;
-  std::vector<SubstackArticle> result;
-  result.reserve(limit);
-  if (readArticleIndex(limit, result, &indexedBytes, &indexedUnread)) {
-    if (totalBytes) *totalBytes = indexedBytes;
-    if (unreadCount) *unreadCount = indexedUnread;
-    LOG_INF("SUBSTORE", "Article index cache: returned=%u limit=%u", static_cast<unsigned>(result.size()),
-            static_cast<unsigned>(limit));
-    return result;
-  }
-  const auto before = [](const auto& a, const auto& b) {
-    if (a.read != b.read) return !a.read;
-    if (a.publishedAt != b.publishedAt) return a.publishedAt > b.publishedAt;
-    return a.downloadedAt > b.downloadedAt;
-  };
   HalFile dir = Storage.open(ARTICLE_META_DIR);
   if (!dir || !dir.isDirectory()) {
     LOG_ERR("SUBSTORE", "Article metadata directory is unavailable: %s", ARTICLE_META_DIR);
-    return result;
+    return ArticleListResult::StorageError;
   }
   char name[96];
   uint32_t metadataFiles = 0;
   uint32_t invalidMetadata = 0;
+  uint32_t missingFiles = 0;
   for (HalFile file = dir.openNextFile(); file; file = dir.openNextFile()) {
     file.getName(name, sizeof(name));
     file.close();
@@ -352,26 +392,78 @@ std::vector<SubstackArticle> SubstackStore::listArticles(size_t limit, uint64_t*
       ++invalidMetadata;
       continue;
     }
+    if (!Storage.exists(article.epubPath.c_str())) {
+      ++missingFiles;
+      continue;
+    }
     indexedBytes += article.byteSize;
     if (!article.read) ++indexedUnread;
-    if (limit == 0) continue;
-    if (result.size() < limit) {
-      result.push_back(std::move(article));
+    ArticleSortRecord candidate;
+    snprintf(candidate.id, sizeof(candidate.id), "%s", article.id.c_str());
+    candidate.read = article.read;
+    candidate.publishedAt = article.publishedAt;
+    candidate.downloadedAt = article.downloadedAt;
+    if (recordCount < MAX_VISIBLE_ARTICLES) {
+      records[recordCount++] = candidate;
     } else {
-      const auto worst = std::max_element(result.begin(), result.end(), before);
-      if (before(article, *worst)) *worst = std::move(article);
+      ArticleSortRecord* worst = std::max_element(records.get(), records.get() + recordCount, articleBefore);
+      if (articleBefore(candidate, *worst)) *worst = candidate;
     }
   }
   dir.close();
-  std::sort(result.begin(), result.end(), before);
-  if (totalBytes) *totalBytes = indexedBytes;
-  if (unreadCount) *unreadCount = indexedUnread;
-  if (limit == MAX_VISIBLE_ARTICLES && !writeArticleIndex(result, indexedBytes, indexedUnread))
-    LOG_ERR("SUBSTORE", "Could not write article index cache");
-  LOG_INF("SUBSTORE", "Article index: metadata=%u valid-returned=%u invalid=%u limit=%u",
-          static_cast<unsigned>(metadataFiles), static_cast<unsigned>(result.size()),
-          static_cast<unsigned>(invalidMetadata), static_cast<unsigned>(limit));
-  return result;
+  std::sort(records.get(), records.get() + recordCount, articleBefore);
+
+  Storage.mkdir("/.crosspoint");
+  Storage.mkdir(ROOT);
+  const std::string temp = std::string(ARTICLE_INDEX_PATH) + ".tmp";
+  const std::string backup = std::string(ARTICLE_INDEX_PATH) + ".bak";
+  Storage.remove(temp.c_str());
+  HalFile index;
+  if (!Storage.openFileForWrite("SUBSTORE", temp, index)) return ArticleListResult::StorageError;
+  const std::string header = std::string(ARTICLE_INDEX_HEADER) + "\n";
+  bool ok = index.write(header.data(), header.size()) == header.size();
+  for (size_t i = 0; ok && i < recordCount; ++i) {
+    SubstackArticle article;
+    if (!loadArticle(records[i].id, article)) {
+      ok = false;
+      break;
+    }
+    JsonDocument doc;
+    articleToJson(article, doc);
+    String body;
+    serializeJson(doc, body);
+    ok = index.write(body.c_str(), body.length()) == body.length() &&
+         index.write(static_cast<uint8_t>('\n')) == 1;
+  }
+  if (ok) {
+    const std::string footer = "# end " + std::to_string(recordCount) + " " + std::to_string(indexedBytes) + " " +
+                               std::to_string(indexedUnread) + "\n";
+    ok = index.write(footer.data(), footer.size()) == footer.size();
+  }
+  index.flush();
+  index.close();
+  if (!ok) {
+    Storage.remove(temp.c_str());
+    return ArticleListResult::StorageError;
+  }
+  Storage.remove(backup.c_str());
+  const bool hadOriginal = Storage.exists(ARTICLE_INDEX_PATH);
+  if (hadOriginal && !Storage.rename(ARTICLE_INDEX_PATH, backup.c_str())) {
+    Storage.remove(temp.c_str());
+    return ArticleListResult::StorageError;
+  }
+  if (!Storage.rename(temp.c_str(), ARTICLE_INDEX_PATH)) {
+    if (hadOriginal) Storage.rename(backup.c_str(), ARTICLE_INDEX_PATH);
+    Storage.remove(temp.c_str());
+    return ArticleListResult::StorageError;
+  }
+  Storage.remove(backup.c_str());
+  LOG_INF("SUBSTORE", "Article index rebuilt: metadata=%u indexed=%u missing-files=%u invalid=%u key-bytes=%u",
+          static_cast<unsigned>(metadataFiles), static_cast<unsigned>(recordCount),
+          static_cast<unsigned>(missingFiles),
+          static_cast<unsigned>(invalidMetadata),
+          static_cast<unsigned>(sizeof(ArticleSortRecord) * MAX_VISIBLE_ARTICLES));
+  return ArticleListResult::Ok;
 }
 
 bool SubstackStore::findArticleByPath(const std::string& epubPath, SubstackArticle& article) const {
@@ -422,8 +514,9 @@ void SubstackStore::invalidateArticleIndex() {
   Storage.remove((std::string(ARTICLE_INDEX_PATH) + ".bak").c_str());
 }
 
-bool SubstackStore::readArticleIndex(const size_t limit, std::vector<SubstackArticle>& articles,
-                                     uint64_t* totalBytes, uint32_t* unreadCount) {
+bool SubstackStore::readArticleIndexPage(const size_t offset, SubstackArticleListItem* items,
+                                         const size_t capacity, size_t* loadedCount, size_t* totalCount,
+                                         uint64_t* totalBytes, uint32_t* unreadCount) {
   HalFile file;
   if (!Storage.openFileForRead("SUBSTORE", ARTICLE_INDEX_PATH, file)) return false;
   bool headerSeen = false;
@@ -453,10 +546,19 @@ bool SubstackStore::readArticleIndex(const size_t limit, std::vector<SubstackArt
     if (line.empty()) return true;
     JsonDocument doc;
     if (deserializeJson(doc, line)) return false;
-    SubstackArticle article;
-    if (!articleFromJson(doc.as<JsonVariantConst>(), article)) return false;
+    const JsonVariantConst value = doc.as<JsonVariantConst>();
+    if (value["id"].isNull() || value["epubPath"].isNull()) return false;
+    if (recordCount >= offset && recordCount - offset < capacity) {
+      SubstackArticleListItem& item = items[recordCount - offset];
+      item = {};
+      copyJsonString(item.id, value["id"]);
+      copyJsonString(item.title, value["title"]);
+      copyJsonString(item.publication, value["publication"]);
+      item.publishedAt = jsonU64(value["publishedAt"]);
+      item.preview = value["preview"] | false;
+      item.read = value["read"] | false;
+    }
     ++recordCount;
-    if (articles.size() < limit) articles.push_back(std::move(article));
     return true;
   };
 
@@ -478,63 +580,23 @@ bool SubstackStore::readArticleIndex(const size_t limit, std::vector<SubstackArt
     }
   }
   file.close();
-  if (complete && !failed) return true;
-  articles.clear();
+  if (complete && !failed) {
+    if (loadedCount) *loadedCount = recordCount > offset ? std::min(capacity, static_cast<size_t>(recordCount) - offset) : 0;
+    if (totalCount) *totalCount = recordCount;
+    return true;
+  }
+  if (loadedCount) *loadedCount = 0;
+  if (totalCount) *totalCount = 0;
   invalidateArticleIndex();
   return false;
 }
 
-bool SubstackStore::writeArticleIndex(const std::vector<SubstackArticle>& articles, const uint64_t totalBytes,
-                                      const uint32_t unreadCount) {
-  Storage.mkdir("/.crosspoint");
-  Storage.mkdir(ROOT);
-  const std::string temp = std::string(ARTICLE_INDEX_PATH) + ".tmp";
-  const std::string backup = std::string(ARTICLE_INDEX_PATH) + ".bak";
-  Storage.remove(temp.c_str());
-  HalFile file;
-  if (!Storage.openFileForWrite("SUBSTORE", temp, file)) return false;
-  const std::string header = std::string(ARTICLE_INDEX_HEADER) + "\n";
-  bool ok = file.write(header.data(), header.size()) == header.size();
-  for (const auto& article : articles) {
-    if (!ok) break;
-    JsonDocument doc;
-    articleToJson(article, doc);
-    String body;
-    serializeJson(doc, body);
-    ok = file.write(body.c_str(), body.length()) == body.length() && file.write(static_cast<uint8_t>('\n')) == 1;
-  }
-  if (ok) {
-    const std::string footer = "# end " + std::to_string(articles.size()) + " " + std::to_string(totalBytes) + " " +
-                               std::to_string(unreadCount) + "\n";
-    ok = file.write(footer.data(), footer.size()) == footer.size();
-  }
-  file.flush();
-  file.close();
-  if (!ok) {
-    Storage.remove(temp.c_str());
-    return false;
-  }
-
-  Storage.remove(backup.c_str());
-  const bool hadOriginal = Storage.exists(ARTICLE_INDEX_PATH);
-  if (hadOriginal && !Storage.rename(ARTICLE_INDEX_PATH, backup.c_str())) {
-    Storage.remove(temp.c_str());
-    return false;
-  }
-  if (!Storage.rename(temp.c_str(), ARTICLE_INDEX_PATH)) {
-    if (hadOriginal) Storage.rename(backup.c_str(), ARTICLE_INDEX_PATH);
-    Storage.remove(temp.c_str());
-    return false;
-  }
-  Storage.remove(backup.c_str());
-  return true;
-}
-
 uint64_t SubstackStore::articleBytes() const {
-  std::vector<SubstackArticle> unused;
   uint64_t indexedBytes = 0;
   uint32_t indexedUnread = 0;
-  if (readArticleIndex(0, unused, &indexedBytes, &indexedUnread)) return indexedBytes;
+  size_t loaded = 0;
+  size_t total = 0;
+  if (readArticleIndexPage(0, nullptr, 0, &loaded, &total, &indexedBytes, &indexedUnread)) return indexedBytes;
   uint64_t bytes = 0;
   HalFile dir = Storage.open(ARTICLE_META_DIR);
   if (!dir || !dir.isDirectory()) return 0;
@@ -545,7 +607,9 @@ uint64_t SubstackStore::articleBytes() const {
     const std::string filename = name;
     if (!hasJsonSuffix(filename)) continue;
     SubstackArticle article;
-    if (loadArticle(filename.substr(0, filename.size() - 5), article)) bytes += article.byteSize;
+    if (loadArticle(filename.substr(0, filename.size() - 5), article) &&
+        Storage.exists(article.epubPath.c_str()))
+      bytes += article.byteSize;
   }
   dir.close();
   return bytes;
@@ -562,7 +626,9 @@ uint32_t SubstackStore::unreadCount() const {
     const std::string filename = name;
     if (!hasJsonSuffix(filename)) continue;
     SubstackArticle article;
-    if (loadArticle(filename.substr(0, filename.size() - 5), article) && !article.read) ++count;
+    if (loadArticle(filename.substr(0, filename.size() - 5), article) &&
+        Storage.exists(article.epubPath.c_str()) && !article.read)
+      ++count;
   }
   dir.close();
   return count;

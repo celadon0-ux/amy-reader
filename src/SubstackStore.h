@@ -33,6 +33,18 @@ struct SubstackArticle {
   bool read = false;
 };
 
+// The article menu only needs display fields and a stable ID. Keep these rows
+// fixed-size so loading one screen never allocates a vector of full metadata
+// objects (or a collection of heap-backed strings).
+struct SubstackArticleListItem {
+  char id[33] = {};
+  char title[193] = {};
+  char publication[97] = {};
+  uint64_t publishedAt = 0;
+  bool preview = false;
+  bool read = false;
+};
+
 struct SubstackFeedSkip {
   std::string publication;
   uint32_t count = 0;
@@ -65,6 +77,7 @@ class SubstackStore {
   static constexpr size_t MAX_VISIBLE_ARTICLES = 256;
 
   enum class Capacity { Available, Quota, SdReserve };
+  enum class ArticleListResult { Ok, LowMemory, StorageError };
 
   static SubstackStore& getInstance();
 
@@ -82,8 +95,9 @@ class SubstackStore {
   bool articleExists(const std::string& id) const;
   bool saveArticle(const SubstackArticle& article) const;
   bool loadArticle(const std::string& id, SubstackArticle& article) const;
-  std::vector<SubstackArticle> listArticles(size_t limit = MAX_VISIBLE_ARTICLES, uint64_t* totalBytes = nullptr,
-                                            uint32_t* unreadCount = nullptr) const;
+  ArticleListResult listArticlePage(size_t offset, SubstackArticleListItem* items, size_t capacity,
+                                    size_t* loadedCount, size_t* totalCount, uint64_t* totalBytes = nullptr,
+                                    uint32_t* unreadCount = nullptr) const;
   bool findArticleByPath(const std::string& epubPath, SubstackArticle& article) const;
   bool markReadByPath(const std::string& epubPath, bool read);
   bool deleteArticle(const std::string& id, std::string* deletedPath = nullptr);
@@ -110,10 +124,10 @@ class SubstackStore {
   static bool writeJsonAtomic(const std::string& path, const JsonDocument& doc);
   static bool readJsonRecovering(const std::string& path, JsonDocument& doc);
   static void invalidateArticleIndex();
-  static bool readArticleIndex(size_t limit, std::vector<SubstackArticle>& articles, uint64_t* totalBytes,
-                               uint32_t* unreadCount);
-  static bool writeArticleIndex(const std::vector<SubstackArticle>& articles, uint64_t totalBytes,
-                                uint32_t unreadCount);
+  static bool readArticleIndexPage(size_t offset, SubstackArticleListItem* items, size_t capacity,
+                                   size_t* loadedCount, size_t* totalCount, uint64_t* totalBytes,
+                                   uint32_t* unreadCount);
+  ArticleListResult rebuildArticleIndex() const;
   static void articleToJson(const SubstackArticle& article, JsonDocument& doc);
   static bool articleFromJson(JsonVariantConst doc, SubstackArticle& article);
 };

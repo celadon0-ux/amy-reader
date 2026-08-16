@@ -22,6 +22,10 @@ class HttpDownloader {
     FILE_ERROR,
     ABORTED,
     TLS_MEMORY_ERROR,
+    // A body without Content-Length ended without the transport confirming
+    // framing. A structured streaming caller may accept it only after its own
+    // parser verifies a complete document.
+    UNKNOWN_LENGTH_RESPONSE,
   };
 
   /**

@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <FontCacheManager.h>
 #include <HalGPIO.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <WiFi.h>
 
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <ctime>
 #include <memory>
+#include <new>
 
 #include "RecentBooksStore.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -53,15 +55,85 @@ void SubstackActivity::onEnter() {
   requestUpdate();
 }
 
-void SubstackActivity::onExit() { Activity::onExit(); }
+void SubstackActivity::onExit() {
+  articles.reset();
+  loadedArticleCount = 0;
+  Activity::onExit();
+}
+
+size_t SubstackActivity::pageCapacity() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int contentHeight = renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  return static_cast<size_t>(std::max(1, GUI.getListPageItems(contentHeight, true)));
+}
+
+size_t SubstackActivity::pageOffsetForSelection() const {
+  const size_t capacity = pageCapacity();
+  const size_t listPageStart = static_cast<size_t>(std::max(0, selectedIndex)) / capacity * capacity;
+  return listPageStart > static_cast<size_t>(COMMAND_COUNT) ? listPageStart - COMMAND_COUNT : 0;
+}
 
 void SubstackActivity::reload() {
-  articles = SUBSTACK_STORE.listArticles(SubstackStore::MAX_VISIBLE_ARTICLES, &visibleArticleBytes,
-                                         &visibleUnreadCount);
-  LOG_DBG("SUBSTACK", "Reloaded %u article(s)", static_cast<unsigned>(articles.size()));
-  const int count = COMMAND_COUNT + static_cast<int>(articles.size());
-  if (count == 0) selectedIndex = 0;
-  else selectedIndex = std::clamp(selectedIndex, 0, count - 1);
+  articles.reset();
+  loadedArticleCount = 0;
+  totalArticleCount = 0;
+  visibleArticleBytes = 0;
+  visibleUnreadCount = 0;
+  const size_t capacity = pageCapacity();
+  articles.reset(new (std::nothrow) SubstackArticleListItem[capacity]);
+  if (!articles) {
+    menuLoadResult = SubstackStore::ArticleListResult::LowMemory;
+    selectedIndex = std::min(selectedIndex, COMMAND_COUNT - 1);
+    LOG_ERR("SUBSTACK", "Article menu page allocation failed: need=%u max-block=%u",
+            static_cast<unsigned>(capacity * sizeof(SubstackArticleListItem)),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    return;
+  }
+
+  articlePageOffset = pageOffsetForSelection();
+  menuLoadResult = SUBSTACK_STORE.listArticlePage(articlePageOffset, articles.get(), capacity,
+                                                   &loadedArticleCount, &totalArticleCount,
+                                                   &visibleArticleBytes, &visibleUnreadCount);
+  if (menuLoadResult != SubstackStore::ArticleListResult::Ok) {
+    articles.reset();
+    loadedArticleCount = 0;
+    totalArticleCount = 0;
+    selectedIndex = std::min(selectedIndex, COMMAND_COUNT - 1);
+    return;
+  }
+
+  const int count = COMMAND_COUNT + static_cast<int>(totalArticleCount);
+  selectedIndex = std::clamp(selectedIndex, 0, std::max(0, count - 1));
+  const size_t correctedOffset = pageOffsetForSelection();
+  if (correctedOffset != articlePageOffset) {
+    articlePageOffset = correctedOffset;
+    menuLoadResult = SUBSTACK_STORE.listArticlePage(articlePageOffset, articles.get(), capacity,
+                                                     &loadedArticleCount, &totalArticleCount,
+                                                     &visibleArticleBytes, &visibleUnreadCount);
+  }
+  LOG_DBG("SUBSTACK", "Reloaded article page: offset=%u loaded=%u total=%u result=%d",
+          static_cast<unsigned>(articlePageOffset), static_cast<unsigned>(loadedArticleCount),
+          static_cast<unsigned>(totalArticleCount), static_cast<int>(menuLoadResult));
+}
+
+void SubstackActivity::ensureSelectedPageLoaded() {
+  if (selectedIndex < COMMAND_COUNT) return;
+  const size_t articleIndex = static_cast<size_t>(selectedIndex - COMMAND_COUNT);
+  if (articles && articleIndex >= articlePageOffset && articleIndex < articlePageOffset + loadedArticleCount) return;
+  reload();
+}
+
+const SubstackArticleListItem* SubstackActivity::rowForListIndex(const int index) const {
+  if (index < COMMAND_COUNT || !articles) return nullptr;
+  const size_t articleIndex = static_cast<size_t>(index - COMMAND_COUNT);
+  if (articleIndex < articlePageOffset || articleIndex >= articlePageOffset + loadedArticleCount) return nullptr;
+  return &articles[articleIndex - articlePageOffset];
+}
+
+bool SubstackActivity::loadSelectedArticle(SubstackArticle& article) const {
+  const auto* row = rowForListIndex(selectedIndex);
+  return row && SUBSTACK_STORE.loadArticle(row->id, article);
 }
 
 void SubstackActivity::beginFetch() {
@@ -80,8 +152,10 @@ void SubstackActivity::beginFetch() {
   // reloads it after sync, so release that copy before bringing up Wi-Fi.
   LOG_DBG("SUBSTACK", "Before refresh cleanup: free=%u max-block=%u articles=%u",
           static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
-          static_cast<unsigned>(articles.size()));
-  std::vector<SubstackArticle>().swap(articles);
+          static_cast<unsigned>(loadedArticleCount));
+  articles.reset();
+  loadedArticleCount = 0;
+  totalArticleCount = 0;
   visibleArticleBytes = 0;
   visibleUnreadCount = 0;
   popup = OptionPopup{};
@@ -99,9 +173,11 @@ void SubstackActivity::beginFetch() {
       WiFi.disconnect(true);
       WiFi.mode(WIFI_OFF);
       delay(30);
-      reload();
       syncStatus.clear();
-      requestUpdate();
+      // Run the menu reload from loop(), after ActivityManager has destroyed
+      // this result callback and all of its captured Wi-Fi state.
+      syncing = true;
+      reloadPending = true;
       return;
     }
     syncing = true;
@@ -158,9 +234,7 @@ void SubstackActivity::beginFetch() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(30);
-    reload();
-    syncing = false;
-    requestUpdateAndWait();
+    reloadPending = true;
   });
 }
 
@@ -169,15 +243,20 @@ void SubstackActivity::activate() {
     beginFetch();
   } else if (selectedIndex == 1) {
     activityManager.goToFileTransfer(true);
-  } else if (selectedIndex - COMMAND_COUNT < static_cast<int>(articles.size())) {
-    activityManager.goToReader(articles[selectedIndex - COMMAND_COUNT].epubPath);
+  } else {
+    SubstackArticle article;
+    if (loadSelectedArticle(article) && Storage.exists(article.epubPath.c_str()))
+      activityManager.goToReader(article.epubPath);
+    else {
+      syncStatus = "Article file missing — refresh to repair";
+      requestUpdate();
+    }
   }
 }
 
 void SubstackActivity::deleteSelected() {
-  const int articleIndex = selectedIndex - COMMAND_COUNT;
-  if (articleIndex < 0 || articleIndex >= static_cast<int>(articles.size())) return;
-  const SubstackArticle article = articles[articleIndex];
+  SubstackArticle article;
+  if (!loadSelectedArticle(article)) return;
   startActivityForResult(
       std::make_unique<ConfirmationActivity>(renderer, mappedInput, "Delete article?", article.title),
       [this, article](const ActivityResult& result) {
@@ -191,14 +270,20 @@ void SubstackActivity::deleteSelected() {
 }
 
 void SubstackActivity::showArticleActions() {
-  const int articleIndex = selectedIndex - COMMAND_COUNT;
-  if (articleIndex < 0 || articleIndex >= static_cast<int>(articles.size())) return;
-  const SubstackArticle snapshot = articles[articleIndex];
+  SubstackArticle snapshot;
+  if (!loadSelectedArticle(snapshot)) return;
   const char* options[] = {"Open / Resume", snapshot.read ? "Mark unread" : "Mark read", "Show original link",
                            "Delete"};
   popup.show("Article actions", options, 4, 0, [this, snapshot](int choice) {
     if (choice == 0) {
-      activityManager.goToReader(snapshot.epubPath);
+      if (Storage.exists(snapshot.epubPath.c_str())) {
+        activityManager.goToReader(snapshot.epubPath);
+      } else {
+        syncStatus = "Article file missing — refresh to repair";
+        SUBSTACK_STORE.saveArticle(snapshot);  // Invalidates the stale menu index.
+        reload();
+        requestUpdate();
+      }
     } else if (choice == 1) {
       SUBSTACK_STORE.markReadByPath(snapshot.epubPath, !snapshot.read);
       if (!snapshot.read) RECENT_BOOKS.removeByPath(snapshot.epubPath);
@@ -214,12 +299,24 @@ void SubstackActivity::showArticleActions() {
 }
 
 void SubstackActivity::loop() {
+  if (reloadPending) {
+    // The Wi-Fi result handler has now returned, releasing its std::function,
+    // ActivityResult, sync summary, and other callback-lifetime allocations.
+    reloadPending = false;
+    if (renderer.getFontCacheManager()) renderer.getFontCacheManager()->clearCache();
+    LOG_DBG("SUBSTACK", "Deferred menu reload: free=%u max-block=%u",
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    reload();
+    syncing = false;
+    requestUpdateAndWait();
+    return;
+  }
   if (syncing) return;
   if (popup.isActive()) {
     popup.handleInput(mappedInput, [this] { requestUpdate(); });
     return;
   }
-  const int count = COMMAND_COUNT + static_cast<int>(articles.size());
+  const int count = COMMAND_COUNT + static_cast<int>(totalArticleCount);
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     onGoHome(HomeMenuItem::SUBSTACK);
     return;
@@ -235,11 +332,13 @@ void SubstackActivity::loop() {
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
     selectedIndex = ButtonNavigator::nextIndex(selectedIndex, count);
+    ensureSelectedPageLoaded();
     requestUpdate();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
     selectedIndex = ButtonNavigator::previousIndex(selectedIndex, count);
+    ensureSelectedPageLoaded();
     requestUpdate();
     return;
   }
@@ -250,11 +349,12 @@ void SubstackActivity::loop() {
   const auto touch = handleListTouch(touched, count, contentTop, contentHeight, true);
   if (touch != ListTouchResult::None) {
     selectedIndex = touched;
+    ensureSelectedPageLoaded();
     if (touch == ListTouchResult::Activated) activate();
   }
 }
 
-std::string SubstackActivity::subtitleFor(const SubstackArticle& article) const {
+std::string SubstackActivity::subtitleFor(const SubstackArticleListItem& article) const {
   std::string result = article.publication;
   const time_t timestamp = static_cast<time_t>(article.publishedAt);
   if (timestamp > 0) {
@@ -280,6 +380,10 @@ void SubstackActivity::render(RenderLock&&) {
   std::string notice;
   const auto& lastSync = SUBSTACK_STORE.lastSync();
   if (syncing) notice = syncStatus;
+  else if (menuLoadResult == SubstackStore::ArticleListResult::LowMemory)
+    notice = "Not enough memory to load article menu";
+  else if (menuLoadResult == SubstackStore::ArticleListResult::StorageError)
+    notice = "Article menu could not be loaded";
   else if (lastSync.storageBlocked()) {
     char value[112];
     snprintf(value, sizeof(value), "Storage limit reached — %u not downloaded",
@@ -295,18 +399,20 @@ void SubstackActivity::render(RenderLock&&) {
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
   const int contentHeight = height - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const int count = COMMAND_COUNT + static_cast<int>(articles.size());
+  const int count = COMMAND_COUNT + static_cast<int>(totalArticleCount);
   GUI.drawList(
       renderer, Rect{0, contentTop, width, contentHeight}, count, selectedIndex,
       [this](int index) {
         if (index == 0) return std::string("Fetch new articles");
         if (index == 1) return std::string("Manage feeds");
-        return articles[index - COMMAND_COUNT].title;
+        const auto* article = rowForListIndex(index);
+        return article ? std::string(article->title) : std::string("Article unavailable");
       },
       [this](int index) {
         if (index == 0) return std::string("Connect to Wi-Fi and refresh now");
         if (index == 1) return std::string("Add, edit, import, or remove feed URLs");
-        return subtitleFor(articles[index - COMMAND_COUNT]);
+        const auto* article = rowForListIndex(index);
+        return article ? subtitleFor(*article) : std::string();
       },
       [](int index) { return index == 0 ? Wifi : index == 1 ? Settings : Book; });
 

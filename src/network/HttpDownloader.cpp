@@ -57,6 +57,7 @@ struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
   HttpDownloader::ProgressCallback progress;
   bool* cancelFlag = nullptr;
+  bool forceConnectionClose = false;
   size_t total = 0;
   size_t downloaded = 0;
 };
@@ -77,6 +78,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
             static_cast<unsigned>(maxBlockBefore));
     freeink::SecureHttpClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
+    http.setReuse(!sink.forceConnectionClose);
     http.setInsecure();
     if (!http.begin(url)) {
       LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
@@ -131,6 +133,8 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     if (http.callbackAborted()) return HttpDownloader::FILE_ERROR;
     if (!http.responseComplete()) {
       LOG_ERR("HTTP", "wolfSSL incomplete: got %zu of %zu bytes", sink.downloaded, sink.total);
+      if (!http.hasContentLength() && sink.downloaded > 0)
+        return HttpDownloader::UNKNOWN_LENGTH_RESPONSE;
       return HttpDownloader::HTTP_ERROR;
     }
     return HttpDownloader::OK;
@@ -301,6 +305,11 @@ HttpDownloader::DownloadError HttpDownloader::fetchUrlWithResult(const std::stri
 #endif
   Sink sink;
   sink.write = onData;
+  // This streaming API is used for large RSS documents. The client object is
+  // not reused after the call, and asking the server to close removes any
+  // ambiguity at the end of an otherwise unframed response without changing
+  // the established OPDS/file-download path.
+  sink.forceConnectionClose = true;
   return runGetSecure(url, username, password, sink);
 }
 

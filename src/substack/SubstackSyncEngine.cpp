@@ -45,6 +45,7 @@ SubstackSyncSummary SubstackSyncEngine::sync(const ProgressCallback& progress) {
     uint32_t feedUpdated = 0;
     uint32_t feedExisting = 0;
     uint32_t feedStorageSkipped = 0;
+    bool retryPass = false;
 
     LOG_DBG("SUBSYNC", "Feed %u/%u before TLS: free=%u max-block=%u", static_cast<unsigned>(enabledIndex),
             static_cast<unsigned>(enabledCount), static_cast<unsigned>(ESP.getFreeHeap()),
@@ -56,16 +57,23 @@ SubstackSyncSummary SubstackSyncEngine::sync(const ProgressCallback& progress) {
       const std::string articleId = SubstackStore::stableId(feedId + "\n" + identity);
       SubstackArticle existingArticle;
       const bool hasExisting = SUBSTACK_STORE.loadArticle(articleId, existingArticle);
-      const bool needsContentUpdate = hasExisting &&
-                                      existingArticle.contentVersion < SubstackEpubWriter::CONTENT_VERSION;
+      const bool missingEpub = hasExisting && !Storage.exists(existingArticle.epubPath.c_str());
+      const bool needsContentUpdate =
+          hasExisting && (existingArticle.contentVersion < SubstackEpubWriter::CONTENT_VERSION || missingEpub);
+      if (missingEpub)
+        LOG_ERR("SUBSYNC", "Repairing article with missing EPUB: %s", existingArticle.epubPath.c_str());
       if (hasExisting && !needsContentUpdate) {
-        ++summary.alreadyDownloaded;
-        ++feedExisting;
+        if (!retryPass) {
+          ++summary.alreadyDownloaded;
+          ++feedExisting;
+        }
         return true;
       }
       const uint64_t estimatedBytes = item.htmlBytes + 16ULL * 1024ULL;
-      const auto capacity = SUBSTACK_STORE.capacityFor(estimatedBytes, needsContentUpdate ? existingArticle.byteSize : 0,
-                                                       currentArticleBytes);
+      // Missing files are not part of articleBytes(), so they cannot receive
+      // quota credit as though their old byte count were still on disk.
+      const uint64_t replacedBytes = needsContentUpdate && !missingEpub ? existingArticle.byteSize : 0;
+      const auto capacity = SUBSTACK_STORE.capacityFor(estimatedBytes, replacedBytes, currentArticleBytes);
       if (capacity != SubstackStore::Capacity::Available) {
         addStorageSkip(summary, articlePublication, capacity);
         ++feedStorageSkipped;
@@ -75,6 +83,12 @@ SubstackSyncSummary SubstackSyncEngine::sync(const ProgressCallback& progress) {
       std::string path;
       uint64_t byteSize = 0;
       if (!SubstackEpubWriter::write(item, articlePublication, articleId, path, byteSize)) {
+        LOG_ERR("SUBSYNC", "Could not create EPUB: %s — %s", articlePublication.c_str(), item.title.c_str());
+        itemFailure = true;
+        return true;
+      }
+      if (!Storage.exists(path.c_str())) {
+        LOG_ERR("SUBSYNC", "EPUB writer returned without a readable file: %s", path.c_str());
         itemFailure = true;
         return true;
       }
@@ -97,6 +111,7 @@ SubstackSyncSummary SubstackSyncEngine::sync(const ProgressCallback& progress) {
         article.read = existingArticle.read;
       }
       if (!SUBSTACK_STORE.saveArticle(article)) {
+        LOG_ERR("SUBSYNC", "Could not save article metadata after EPUB write: %s", path.c_str());
         Storage.remove(path.c_str());
         itemFailure = true;
         return true;
@@ -106,7 +121,7 @@ SubstackSyncSummary SubstackSyncEngine::sync(const ProgressCallback& progress) {
         ++feedUpdated;
         if (existingArticle.epubPath != path) Storage.remove(existingArticle.epubPath.c_str());
         if (byteSize > existingArticle.byteSize) summary.bytesAdded += byteSize - existingArticle.byteSize;
-        currentArticleBytes = currentArticleBytes - std::min(currentArticleBytes, existingArticle.byteSize) + byteSize;
+        currentArticleBytes = currentArticleBytes - std::min(currentArticleBytes, replacedBytes) + byteSize;
       } else {
         ++summary.downloaded;
         ++feedDownloaded;
@@ -120,24 +135,41 @@ SubstackSyncSummary SubstackSyncEngine::sync(const ProgressCallback& progress) {
     // socket made that allocation compete with wolfSSL's handshake. Delay it
     // until the first response body bytes, when TLS is already established.
     std::unique_ptr<SubstackRssParser> parser;
-    const auto fetchResult = HttpDownloader::fetchUrlWithResult(
-        feedUrl, [&](const uint8_t* data, size_t length) {
-          if (!parser) {
-            LOG_DBG("SUBSYNC", "TLS complete; creating RSS parser: free=%u max-block=%u",
-                    static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
-            parser = std::make_unique<SubstackRssParser>(handleItem);
-          }
-          return parser->write(data, length) == length;
-        });
-    if (parser) {
-      parser->flush();
-      if (!parser->publication().empty()) publication = parser->publication();
-      LOG_INF("SUBSYNC", "Feed parsed: %s items=%u emitted=%u malformed=%u new=%u updated=%u existing=%u storage-skipped=%u",
-              publication.c_str(), static_cast<unsigned>(parser->itemsSeen()),
-              static_cast<unsigned>(parser->itemsEmitted()), static_cast<unsigned>(parser->itemsSkipped()),
-              static_cast<unsigned>(feedDownloaded), static_cast<unsigned>(feedUpdated), static_cast<unsigned>(feedExisting),
-              static_cast<unsigned>(feedStorageSkipped));
+    HttpDownloader::DownloadError fetchResult = HttpDownloader::HTTP_ERROR;
+    bool emptyFeed = false;
+    bool parserFailed = true;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      retryPass = attempt > 0;
+      parser.reset();
+      fetchResult = HttpDownloader::fetchUrlWithResult(
+          feedUrl, [&](const uint8_t* data, size_t length) {
+            if (!parser) {
+              LOG_DBG("SUBSYNC", "TLS complete; creating RSS parser: free=%u max-block=%u",
+                      static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+              parser = std::make_unique<SubstackRssParser>(handleItem);
+            }
+            return parser->write(data, length) == length;
+          });
+      if (parser) {
+        parser->flush();
+        if (!parser->publication().empty()) publication = parser->publication();
+        LOG_INF("SUBSYNC", "Feed parsed: %s attempt=%u items=%u emitted=%u malformed=%u new=%u updated=%u existing=%u storage-skipped=%u",
+                publication.c_str(), static_cast<unsigned>(attempt + 1),
+                static_cast<unsigned>(parser->itemsSeen()), static_cast<unsigned>(parser->itemsEmitted()),
+                static_cast<unsigned>(parser->itemsSkipped()), static_cast<unsigned>(feedDownloaded),
+                static_cast<unsigned>(feedUpdated), static_cast<unsigned>(feedExisting),
+                static_cast<unsigned>(feedStorageSkipped));
+      }
+      emptyFeed = parser && (parser->itemsSeen() == 0 || parser->itemsEmitted() == 0);
+      parserFailed = !parser || parser->error() || parser->aborted() || emptyFeed;
+      const bool retryIncomplete = attempt == 0 && fetchResult == HttpDownloader::UNKNOWN_LENGTH_RESPONSE &&
+                                   parserFailed && !itemFailure && feedStorageSkipped == 0;
+      if (!retryIncomplete) break;
+      LOG_ERR("SUBSYNC", "Retrying truncated unknown-length feed once: %s", feedUrl.c_str());
+      parser.reset();
+      delay(50);
     }
+    retryPass = false;
 
     SubstackFeed* feed = SUBSTACK_STORE.mutableFeedById(feedId);
     if (feed) {
@@ -145,9 +177,13 @@ SubstackSyncSummary SubstackSyncEngine::sync(const ProgressCallback& progress) {
       feed->lastFetchAt = now;
     }
     const bool lowMemory = fetchResult == HttpDownloader::TLS_MEMORY_ERROR;
-    const bool emptyFeed = parser && (parser->itemsSeen() == 0 || parser->itemsEmitted() == 0);
-    const bool parserFailed = !parser || parser->error() || parser->aborted() || emptyFeed;
-    if (fetchResult != HttpDownloader::OK || parserFailed || itemFailure) {
+    // Some Substack/CDN responses have no Content-Length and close the TLS
+    // stream without enough transport-level framing for wolfSSL to mark the
+    // response complete. Expat's final parse is a stronger integrity check for
+    // this structured payload: accept only a complete, non-empty XML document.
+    const bool parserValidatedUnknownLength =
+        fetchResult == HttpDownloader::UNKNOWN_LENGTH_RESPONSE && !parserFailed;
+    if ((fetchResult != HttpDownloader::OK && !parserValidatedUnknownLength) || parserFailed || itemFailure) {
       ++summary.feedsFailed;
       if (lowMemory) {
         ++summary.lowMemoryFailures;
@@ -164,6 +200,8 @@ SubstackSyncSummary SubstackSyncEngine::sync(const ProgressCallback& progress) {
               static_cast<int>(fetchResult), parserFailed ? "failed" : "ok", itemFailure ? "failed" : "ok",
               static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
     } else if (feed) {
+      if (parserValidatedUnknownLength)
+        LOG_INF("SUBSYNC", "Accepted complete XML from unknown-length response: %s", feedUrl.c_str());
       feed->lastError.clear();
     }
     SUBSTACK_STORE.save();

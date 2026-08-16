@@ -385,5 +385,19 @@ bool SubstackEpubWriter::write(const SubstackRssItem& item, const std::string& p
     return false;
   }
   Storage.remove(backupPath.c_str());
+  // A successful rename is not enough of a postcondition for the feed index:
+  // verify that the final path is immediately openable and has the size that
+  // was just written before allowing metadata to reference it.
+  HalFile verified = Storage.open(outputPath.c_str());
+  const bool outputValid = verified && !verified.isDirectory() && verified.fileSize64() == outputBytes;
+  if (verified) verified.close();
+  if (!outputValid) {
+    LOG_ERR("SUBEPUB", "Final EPUB verification failed: %s expected-bytes=%llu", outputPath.c_str(),
+            static_cast<unsigned long long>(outputBytes));
+    Storage.remove(outputPath.c_str());
+    return false;
+  }
+  LOG_INF("SUBEPUB", "EPUB ready: %s bytes=%llu", outputPath.c_str(),
+          static_cast<unsigned long long>(outputBytes));
   return true;
 }
